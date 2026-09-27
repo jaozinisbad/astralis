@@ -49,6 +49,7 @@ export default function ServerSettingsModal({ servidor, cargos, membros = [], on
   const [membroSelecionado, setMembroSelecionado] = useState('');
   const [cargoSelecionado, setCargoSelecionado] = useState('');
   const [erro, setErro] = useState('');
+  const [aviso, setAviso] = useState('');
   const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
@@ -76,8 +77,10 @@ export default function ServerSettingsModal({ servidor, cargos, membros = [], on
     event.preventDefault();
     setSalvando(true);
     setErro('');
+    setAviso('');
     try {
       await onSalvar({ nome: nome.trim(), descricao: descricao.trim(), icone_url: iconeUrl, banner_url: bannerUrl });
+      setAviso('Servidor salvo.');
     } catch (err) {
       setErro(err.message);
     } finally {
@@ -110,8 +113,8 @@ export default function ServerSettingsModal({ servidor, cargos, membros = [], on
 
   return (
     <div className="modal-overlay" onClick={onFechar}>
-      <div className="modal servidor-config-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-cabecalho"><div><span className="eyebrow">Administração</span><h2>Configurar servidor</h2></div><button type="button" onClick={onFechar}>✕</button></div>
+      <div className="modal servidor-config-modal" role="dialog" aria-modal="true" aria-labelledby="configurar-servidor-titulo" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-cabecalho"><div><span className="eyebrow">Administração</span><h2 id="configurar-servidor-titulo">Configurar servidor</h2></div><button type="button" aria-label="Fechar configurações do servidor" onClick={onFechar}>✕</button></div>
         <form onSubmit={salvarServidor}>
           <label className="settings-field">Nome<input value={nome} maxLength="80" onChange={(event) => setNome(event.target.value)} /></label>
           <label className="settings-field">Descrição<textarea value={descricao} maxLength="240" onChange={(event) => setDescricao(event.target.value)} /></label>
@@ -119,7 +122,8 @@ export default function ServerSettingsModal({ servidor, cargos, membros = [], on
             <label className="arquivo-botao">Ícone <input type="file" accept="image/*" onChange={(event) => escolherImagem(event, 'icone')} /><span>Escolher imagem</span></label>
             <label className="arquivo-botao">Banner <input type="file" accept="image/*" onChange={(event) => escolherImagem(event, 'banner')} /><span>Escolher imagem</span></label>
           </div>
-          <button type="submit" className="modal-botao-primario" disabled={salvando}>Salvar servidor</button>
+          <button type="submit" className="modal-botao-primario" disabled={salvando}>{salvando ? 'Salvando…' : 'Salvar servidor'}</button>
+          {aviso && <p role="status">{aviso}</p>}
         </form>
 
         <div className="cargo-configuracao">

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, session, ipcMain } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const { exec } = require('child_process');
@@ -280,6 +280,11 @@ function configurarAtualizacaoAutomatica(win) {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle('copiar-texto', (_event, texto) => {
+    if (typeof texto !== 'string' || !texto) throw new Error('Texto inválido para copiar.');
+    clipboard.writeText(texto);
+    return true;
+  });
   configurarPermissoesDeMidia();
   configurarCompartilhamentoDeTela();
   configurarCapturaPorProcesso();

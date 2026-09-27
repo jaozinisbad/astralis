@@ -72,7 +72,7 @@ function preferirH264(transceiver) {
 // igual ao Discord). Em vez disso, ele expõe funções via ref (mutar,
 // compartilhar tela, etc.) e avisa o componente pai sempre que o estado
 // muda, através de onEstadoChange. O que ele ainda renderiza sozinho são
-// só os vídeos de tela compartilhada, quando existem.
+// só o vídeo que a pessoa selecionou pelo indicador "AO VIVO".
 const VoiceChannel = forwardRef(function VoiceChannel(
   { canal, socket, nomeUsuario, onDesconectar, onEstadoChange },
   ref
@@ -82,8 +82,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [audioMudo, setAudioMudo] = useState(false);
   const [erro, setErro] = useState('');
   const [erroCompartilhamento, setErroCompartilhamento] = useState('');
-  const [telasOcultas, setTelasOcultas] = useState(() => new Set());
   const [telasMutadas, setTelasMutadas] = useState(() => new Set());
+  const [volumesTelas, setVolumesTelas] = useState({});
+  const [telaSelecionadaId, setTelaSelecionadaId] = useState(null);
+  const [emTelaCheia, setEmTelaCheia] = useState(false);
   const [conectando, setConectando] = useState(true);
   const [compartilhandoTela, setCompartilhandoTela] = useState(false);
   const [resolucaoTela, setResolucaoTela] = useState('720p');
@@ -103,6 +105,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const filtroRuidoRef = useRef(null);
 
   const telaLocalRef = useRef(null);
+  const telaTileRef = useRef(null);
   const resolucaoTelaAtualRef = useRef('720p'); // pra saber o alvo de bitrate ao (re)equilibrar entre espectadores
   const pipelineAudioProcessoRef = useRef(null); // { stream, receberChunk, destruir } quando usando audio por app
   const pararOuvinteAudioTelaRef = useRef(null); // funcao pra parar de escutar os chunks vindos do Electron
@@ -110,11 +113,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const audiosRef = useRef({}); // socketId -> HTMLAudioElement (microfone)
   const audiosTelaRef = useRef({}); // socketId -> HTMLAudioElement (áudio do sistema de quem compartilha tela)
   const audioMudoRef = useRef(false);
+  const telasMutadasRef = useRef(new Set());
+  const volumesTelasRef = useRef({});
   const contextoAudioRef = useRef(null); // contexto só dos efeitos sonoros
   const telasComSomRef = useRef(new Set());
   const configuracaoAudioRef = useRef({ volumeEntrada: 100, volumeSaida: 100, microfoneId: '', foneId: '', perfilEntrada: 'isolamento', supressaoRuido: 'rnnoise', cancelamentoEco: true, ganhoAutomatico: true });
-  const videosRemotosRef = useRef({}); // socketId -> elemento <video> (pra tela cheia)
-
   // Calcula quanto bitrate CADA espectador deve receber agora, dividindo o
   // orçamento total pelo número de gente assistindo — em vez de mandar o
   // mesmo valor alto pra todo mundo e estourar o upload de quem compartilha.
@@ -146,8 +149,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   // Avisa o App sempre que algo que a sidebar precisa mostrar mudar.
   useEffect(() => {
-    onEstadoChange?.({ participantes, micMudo, audioMudo, compartilhandoTela, erro, erroCompartilhamento, conectando });
-  }, [participantes, micMudo, audioMudo, compartilhandoTela, erro, erroCompartilhamento, conectando]);
+    const telasAtivas = Object.keys(telasRemotas);
+    if (compartilhandoTela && socket?.id) telasAtivas.push(socket.id);
+    onEstadoChange?.({
+      participantes,
+      micMudo,
+      audioMudo,
+      compartilhandoTela,
+      telasAtivas,
+      telaSelecionadaId,
+      erro,
+      erroCompartilhamento,
+      conectando,
+    });
+  }, [participantes, micMudo, audioMudo, compartilhandoTela, telasRemotas, telaSelecionadaId, socket, erro, erroCompartilhamento, conectando]);
 
   // Inicializa a configuração de áudio do localStorage
   useEffect(() => {
@@ -294,8 +309,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         audio.setSinkId(foneId).catch(() => {});
       }
     });
-    Object.values(audiosTelaRef.current).forEach((audio) => {
-      audio.volume = volume;
+    Object.entries(audiosTelaRef.current).forEach(([socketId, audio]) => {
+      audio.volume = volume * (volumesTelasRef.current[socketId] ?? 100) / 100;
       if (foneId && audio.setSinkId) {
         audio.setSinkId(foneId).catch(() => {});
       }
@@ -439,8 +454,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           if (!audio) {
             audio = new Audio();
             audio.autoplay = true;
-            audio.muted = audioMudoRef.current;
-            audio.volume = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
+            audio.muted = ehAudioDeTela
+              ? telasMutadasRef.current.has(socketId)
+              : audioMudoRef.current;
+            const volumeSaida = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
+            audio.volume = ehAudioDeTela
+              ? volumeSaida * (volumesTelasRef.current[socketId] ?? 100) / 100
+              : volumeSaida;
             if (configuracaoAudioRef.current.foneId && audio.setSinkId) {
               audio.setSinkId(configuracaoAudioRef.current.foneId).catch(() => {});
             }
@@ -577,13 +597,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     socket.on('peer-saiu', ({ socketId }) => {
       tocarEfeito('sair');
       telasComSomRef.current.delete(socketId);
-      delete videosRemotosRef.current[socketId];
-      setTelasOcultas((atual) => {
-        if (!atual.has(socketId)) return atual;
-        const copia = new Set(atual);
-        copia.delete(socketId);
-        return copia;
-      });
       fecharConexao(socketId);
       setParticipantes((atual) => atual.filter((p) => p.socketId !== socketId));
     });
@@ -626,6 +639,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       window.electronAPI?.pararCapturaProcesso?.();
       setParticipantes([]);
       setTelasRemotas({});
+      setTelaSelecionadaId(null);
       telasComSomRef.current.clear();
       setCompartilhandoTela(false);
       setAudioMudo(false);
@@ -838,19 +852,18 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     await renegociarComTodos();
   }
 
-  async function abrirTelaCheia(video) {
+  async function abrirTelaCheia() {
     try {
-      if (!video) {
-        throw new Error('Elemento de vídeo não encontrado.');
+      const elemento = telaTileRef.current;
+      if (!elemento) {
+        throw new Error('Painel da transmissão não encontrado.');
       }
-      if (document.fullscreenElement) {
+      if (document.fullscreenElement === elemento) {
         await document.exitFullscreen();
       } else {
-        await video.requestFullscreen();
+        await elemento.requestFullscreen();
       }
     } catch (err) {
-      // Antes esse erro nunca aparecia (a busca pelo vídeo acontecia fora
-      // do try/catch), então uma falha aqui parecia "o botão não faz nada".
       console.error('Falha ao abrir tela cheia:', err);
       setErroCompartilhamento('Não foi possível abrir a transmissão em tela cheia.');
     }
@@ -905,18 +918,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     iniciarCompartilhamento,
     pararCompartilhamento,
     aplicarConfiguracao,
+    alternarTransmissao,
+    fecharTransmissao: () => setTelaSelecionadaId(null),
   }));
 
-  function alternarTelaOculta(socketId) {
-    setTelasOcultas((atual) => {
-      const copia = new Set(atual);
-      if (copia.has(socketId)) {
-        copia.delete(socketId);
-      } else {
-        copia.add(socketId);
-      }
-      return copia;
-    });
+  function alternarTransmissao(socketId) {
+    setTelaSelecionadaId((atual) => atual === socketId ? null : socketId);
   }
 
   // Muda só o áudio, sem parar de ver a tela (diferente de "parar de
@@ -924,108 +931,117 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // próprio — isso não mexe no seu microfone nem no áudio de mais
   // ninguém na call.
   function alternarMuteTela(socketId) {
-    setTelasMutadas((atual) => {
-      const copia = new Set(atual);
-      if (copia.has(socketId)) {
-        copia.delete(socketId);
-      } else {
-        copia.add(socketId);
-      }
-      return copia;
-    });
+    const copia = new Set(telasMutadasRef.current);
+    if (copia.has(socketId)) copia.delete(socketId);
+    else copia.add(socketId);
+    telasMutadasRef.current = copia;
+    setTelasMutadas(copia);
+    if (audiosTelaRef.current[socketId]) {
+      audiosTelaRef.current[socketId].muted = copia.has(socketId);
+    }
   }
 
-  const telasRemotasLista = Object.entries(telasRemotas);
-  // "Parar de assistir" agora tira a tela do grid de vez, em vez de
-  // deixar uma caixa grande no lugar dela só com um botão — daí quem
-  // tem várias telas abertas não fica com um monte de espaço ocupado
-  // à toa. Quem quiser voltar a assistir usa a lista compacta abaixo
-  // do grid.
-  const telasVisiveis = telasRemotasLista.filter(([socketId]) => !telasOcultas.has(socketId));
-  const telasEscondidas = telasRemotasLista.filter(([socketId]) => telasOcultas.has(socketId));
-  const temTelaPraMostrar = compartilhandoTela || telasRemotasLista.length > 0;
+  function alterarVolumeTela(socketId, volume) {
+    const volumeLimitado = Math.max(0, Math.min(100, Number(volume)));
+    const volumes = { ...volumesTelasRef.current, [socketId]: volumeLimitado };
+    volumesTelasRef.current = volumes;
+    setVolumesTelas(volumes);
+    const audio = audiosTelaRef.current[socketId];
+    if (audio) {
+      const volumeSaida = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
+      audio.volume = volumeSaida * volumeLimitado / 100;
+    }
+  }
 
-  if (!temTelaPraMostrar) return null;
+  const telaLocalSelecionada = compartilhandoTela && telaSelecionadaId === socket?.id;
+  const streamSelecionada = telaLocalSelecionada
+    ? telaLocalRef.current
+    : telasRemotas[telaSelecionadaId];
+  const participanteSelecionado = participantes.find((p) => p.socketId === telaSelecionadaId);
+
+  useEffect(() => {
+    if (!telaSelecionadaId) return;
+    const selecaoLocalValida = telaSelecionadaId === socket?.id && compartilhandoTela;
+    const selecaoRemotaValida = Boolean(telasRemotas[telaSelecionadaId]);
+    if (!selecaoLocalValida && !selecaoRemotaValida) setTelaSelecionadaId(null);
+  }, [telaSelecionadaId, socket, compartilhandoTela, telasRemotas]);
+
+  useEffect(() => {
+    function sincronizarTelaCheia() {
+      setEmTelaCheia(document.fullscreenElement === telaTileRef.current);
+    }
+    document.addEventListener('fullscreenchange', sincronizarTelaCheia);
+    return () => document.removeEventListener('fullscreenchange', sincronizarTelaCheia);
+  }, []);
+
+  if (!streamSelecionada) return null;
 
   return (
-    <div className="content voice-call-panel">
-      <div className="content__header"><span className="content__channel-symbol">◌</span> {canal.nome} — transmissão de tela</div>
+    <div className="content voice-call-panel voice-call-panel--active">
+      <div className="content__header voice-call-panel__header">
+        <span className="content__channel-symbol">◌</span>
+        <span>{canal.nome} — {telaLocalSelecionada ? 'Sua tela' : participanteSelecionado?.nome || 'Transmissão ao vivo'}</span>
+        <span className="voice-call-panel__live"><span /> AO VIVO</span>
+        <button type="button" className="voice-call-panel__close" onClick={() => setTelaSelecionadaId(null)}>
+          Fechar
+        </button>
+      </div>
       <div className="content__body">
         <div className="telas-compartilhadas">
-          {compartilhandoTela && (
-            <div className="tela-tile">
-              <video
-                autoPlay
-                muted
-                playsInline
-                ref={(el) => {
-                  if (el && telaLocalRef.current) el.srcObject = telaLocalRef.current;
-                }}
-              />
-              <div className="tela-tile__label">Sua tela (você)</div>
+          <div className="tela-tile" key={telaSelecionadaId} ref={telaTileRef}>
+            <video
+              autoPlay
+              playsInline
+              muted
+              ref={(el) => {
+                if (el) el.srcObject = streamSelecionada;
+              }}
+            />
+            <div className="tela-tile__label">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Alguém'}</div>
+            <div className="tela-tile__controls">
+              <button
+                className="tela-tile__fullscreen"
+                onClick={abrirTelaCheia}
+                title={emTelaCheia ? 'Sair da tela cheia' : 'Abrir a transmissão em tela cheia'}
+                type="button"
+              >
+                {emTelaCheia ? 'Sair da tela cheia' : 'Tela cheia'}
+              </button>
+              {!telaLocalSelecionada && (
+                <>
+                  <label className="tela-tile__volume">
+                    <span>Volume {Math.round(volumesTelas[telaSelecionadaId] ?? 100)}%</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={volumesTelas[telaSelecionadaId] ?? 100}
+                      aria-label={`Volume da transmissão de ${participanteSelecionado?.nome || 'Alguém'}`}
+                      onChange={(evento) => alterarVolumeTela(telaSelecionadaId, evento.target.valueAsNumber)}
+                    />
+                  </label>
+                  <button
+                    className="tela-tile__mutar"
+                    onClick={() => alternarMuteTela(telaSelecionadaId)}
+                    title={telasMutadas.has(telaSelecionadaId) ? 'Ativar o áudio dessa tela' : 'Mutar o áudio dessa tela'}
+                    type="button"
+                  >
+                    {telasMutadas.has(telaSelecionadaId) ? 'Ativar som' : 'Silenciar'}
+                  </button>
+                </>
+              )}
+              <button
+                className="tela-tile__ocultar"
+                onClick={() => setTelaSelecionadaId(null)}
+                title="Fechar a transmissão sem sair da chamada"
+                type="button"
+              >
+                Fechar
+              </button>
             </div>
-          )}
-          {telasVisiveis.map(([socketId, stream]) => {
-            const participante = participantes.find((p) => p.socketId === socketId);
-            const mutada = telasMutadas.has(socketId);
-            return (
-              <div className="tela-tile" key={socketId}>
-                <video
-                  autoPlay
-                  playsInline
-                  muted={mutada}
-                  ref={(el) => {
-                    videosRemotosRef.current[socketId] = el;
-                    if (el) el.srcObject = stream;
-                  }}
-                />
-                <div className="tela-tile__label">{participante?.nome || 'Alguém'}</div>
-                <button
-                  className="tela-tile__fullscreen"
-                  onClick={() => abrirTelaCheia(videosRemotosRef.current[socketId])}
-                  title={`Abrir transmissão de ${participante?.nome || 'Alguém'} em tela cheia`}
-                  type="button"
-                >
-                  Tela cheia
-                </button>
-                <button
-                  className="tela-tile__mutar"
-                  onClick={() => alternarMuteTela(socketId)}
-                  title={mutada ? 'Ativar o áudio dessa tela' : 'Mutar o áudio dessa tela'}
-                  type="button"
-                >
-                  {mutada ? 'Som desligado' : 'Som ligado'}
-                </button>
-                <button
-                  className="tela-tile__ocultar"
-                  onClick={() => alternarTelaOculta(socketId)}
-                  title="Parar de assistir essa tela (sem sair da call)"
-                  type="button"
-                >
-                  Ocultar
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        {telasEscondidas.length > 0 && (
-          <div className="telas-ocultas-lista">
-            {telasEscondidas.map(([socketId]) => {
-              const participante = participantes.find((p) => p.socketId === socketId);
-              return (
-                <button
-                  key={socketId}
-                  type="button"
-                  className="tela-oculta-chip"
-                  onClick={() => alternarTelaOculta(socketId)}
-                  title="Voltar a assistir essa tela"
-                >
-                  👁️ Voltar a assistir {participante?.nome || 'Alguém'}
-                </button>
-              );
-            })}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import ScreenShareSourcePicker from './components/ScreenShareSourcePicker.jsx';
 import FriendsScreen from './components/FriendsScreen.jsx';
 import DirectMessageScreen from './components/DirectMessageScreen.jsx';
 import ServerSettingsModal from './components/ServerSettingsModal.jsx';
+import CreateChannelModal from './components/CreateChannelModal.jsx';
 import MemberSidebar from './components/MemberSidebar.jsx';
 import { SERVER_URL, apiFetch } from './api.js';
 
@@ -43,6 +44,8 @@ export default function App() {
     micMudo: false,
     audioMudo: false,
     compartilhandoTela: false,
+    telasAtivas: [],
+    telaSelecionadaId: null,
     erro: '',
     erroCompartilhamento: '',
     conectando: true,
@@ -52,6 +55,7 @@ export default function App() {
   const [perfilAberto, setPerfilAberto] = useState(false);
   const [settingsAberto, setSettingsAberto] = useState(false);
   const [servidorConfiguracaoAberto, setServidorConfiguracaoAberto] = useState(false);
+  const [criacaoCanal, setCriacaoCanal] = useState(null);
   const [pickerTelaAberto, setPickerTelaAberto] = useState(false);
   const [atualizacaoPronta, setAtualizacaoPronta] = useState(false);
 
@@ -156,7 +160,7 @@ export default function App() {
     socket.on('presenca-voz-canal', aoAtualizarPresencaVoz);
 
     function aoSerExpulsoDaCall() {
-      setCanalDeVoz(null);
+      desconectarVoz();
     }
     socket.on('voce-foi-expulso-da-call', aoSerExpulsoDaCall);
 
@@ -236,6 +240,7 @@ export default function App() {
   }
 
   function sair() {
+    desconectarVoz();
     localStorage.removeItem('sessao');
     setSocket((atual) => {
       atual?.disconnect();
@@ -246,13 +251,13 @@ export default function App() {
     setServidorAtivoId(null);
     setCanais([]);
     setCanalAtivo(null);
-    setCanalDeVoz(null);
     setPresencaVoz({});
     setMembrosServidor([]);
     setCargosServidor([]);
     setPerfilAberto(false);
     setSettingsAberto(false);
     setServidorConfiguracaoAberto(false);
+    setCriacaoCanal(null);
     setPickerTelaAberto(false);
     setModalAberto(false);
     setAmigos([]);
@@ -275,6 +280,7 @@ export default function App() {
 
   async function excluirServidor(id) {
     await apiFetch(`/api/servidores/${id}`, sessao.token, { method: 'DELETE' });
+    if (servidorAtivoId === id) desconectarVoz();
     setServidores((atual) => {
       const restantes = atual.filter((s) => s.id !== id);
       if (servidorAtivoId === id) {
@@ -286,6 +292,7 @@ export default function App() {
 
   async function sairDoServidor(id) {
     await apiFetch(`/api/servidores/${id}/sair`, sessao.token, { method: 'POST' });
+    if (servidorAtivoId === id) desconectarVoz();
     setServidores((atual) => {
       const restantes = atual.filter((s) => s.id !== id);
       if (servidorAtivoId === id) {
@@ -335,8 +342,7 @@ export default function App() {
     setMembrosServidor(membrosAtualizados);
   }
 
-  async function criarCanal(tipo) {
-    const nome = window.prompt(tipo === 'texto' ? 'Nome do canal de texto:' : 'Nome do canal de voz:');
+  async function criarCanal(tipo, nome) {
     if (!nome || !nome.trim()) return;
     const novo = await apiFetch(`/api/servidores/${servidorAtivoId}/canais`, sessao.token, {
       method: 'POST',
@@ -349,7 +355,7 @@ export default function App() {
     await apiFetch(`/api/servidores/${servidorAtivoId}/canais/${canalId}`, sessao.token, { method: 'DELETE' });
     setCanais((atual) => atual.filter((c) => c.id !== canalId));
     if (canalAtivo?.id === canalId) setCanalAtivo(null);
-    if (canalDeVoz?.id === canalId) setCanalDeVoz(null);
+    if (canalDeVoz?.id === canalId) desconectarVoz();
   }
 
   function expulsarDaCall(canalId, usuarioId) {
@@ -367,12 +373,20 @@ export default function App() {
   }
 
   function selecionarCanal(canal) {
+    fecharVisualizacaoTransmissao();
     setCanalAtivo(canal);
     if (canal.tipo === 'voz') setCanalDeVoz(canal);
   }
 
+  function fecharVisualizacaoTransmissao() {
+    voiceChannelRef.current?.fecharTransmissao();
+    setVozEstado((atual) => ({ ...atual, telaSelecionadaId: null }));
+  }
+
   function desconectarVoz() {
+    fecharVisualizacaoTransmissao();
     setCanalDeVoz(null);
+    setVozEstado((atual) => ({ ...atual, telasAtivas: [], compartilhandoTela: false }));
   }
 
   const vozAcoes = {
@@ -389,15 +403,18 @@ export default function App() {
   }
 
   function selecionarServidor(id) {
+    fecharVisualizacaoTransmissao();
     setServidorAtivoId(id);
     setView('servidor');
   }
 
   function abrirAmigos() {
+    fecharVisualizacaoTransmissao();
     setView('amigos');
   }
 
   function abrirDM(amigo) {
+    fecharVisualizacaoTransmissao();
     setDmAtiva(amigo);
     setView('dm');
   }
@@ -432,7 +449,7 @@ export default function App() {
 
   return (
     <>
-      <div className="app">
+      <div className={`app${vozEstado.telaSelecionadaId ? ' app--transmissao-aberta' : ''}`}>
       {atualizacaoPronta && (
         <div className="atualizacao-banner">
           <span>Uma atualização foi baixada.</span>
@@ -472,9 +489,10 @@ export default function App() {
             vozAcoes={vozAcoes}
             nomeUsuarioNaVoz={sessao.usuario.nome}
             onAbrirServidorConfiguracao={() => setServidorConfiguracaoAberto(true)}
-            onCriarCanal={criarCanal}
+            onCriarCanal={(tipo) => setCriacaoCanal({ tipo, servidorId: servidorAtivoId })}
             onApagarCanal={apagarCanal}
             onExpulsarDaCall={expulsarDaCall}
+            onAssistirTransmissao={(socketId) => voiceChannelRef.current?.alternarTransmissao(socketId)}
           />
           <ChatArea
             canal={canalAtivo}
@@ -606,6 +624,14 @@ export default function App() {
             // Configuração já foi salva em localStorage no componente
             voiceChannelRef.current?.aplicarConfiguracao(config);
           }}
+        />
+      )}
+
+      {criacaoCanal && criacaoCanal.servidorId === servidorAtivoId && (
+        <CreateChannelModal
+          tipo={criacaoCanal.tipo}
+          onCriar={(nome) => criarCanal(criacaoCanal.tipo, nome)}
+          onFechar={() => setCriacaoCanal(null)}
         />
       )}
 

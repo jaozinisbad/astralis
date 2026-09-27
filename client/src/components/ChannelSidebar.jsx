@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
+import InviteServerModal from './InviteServerModal.jsx';
 
 function IconTexto() {
   return <span className="channel-icon">#</span>;
@@ -64,10 +65,15 @@ export default function ChannelSidebar({
   onCriarCanal,
   onApagarCanal,
   onExpulsarDaCall,
+  onAssistirTransmissao,
 }) {
   const [menuServidorAberto, setMenuServidorAberto] = useState(false);
   const [menuPerfilAberto, setMenuPerfilAberto] = useState(false);
+  const [conviteAberto, setConviteAberto] = useState(false);
+  const [feedbackConvite, setFeedbackConvite] = useState(null);
+  const feedbackTimerRef = useRef(null);
   const menuRef = useRef(null);
+  useEffect(() => () => window.clearTimeout(feedbackTimerRef.current), []);
   useEffect(() => {
     const fechar = (event) => {
       if (!menuRef.current?.contains(event.target)) {
@@ -83,6 +89,45 @@ export default function ChannelSidebar({
   const podeGerenciarCanais = souDono || minhasPermissoes.gerenciar_canais;
   const podeExpulsarCall = souDono || minhasPermissoes.expulsar_call;
 
+  function copiarComSelecao(texto) {
+    const campo = document.createElement('textarea');
+    campo.value = texto;
+    campo.setAttribute('readonly', '');
+    campo.style.position = 'fixed';
+    campo.style.opacity = '0';
+    document.body.appendChild(campo);
+    campo.select();
+    try {
+      return document.execCommand('copy');
+    } finally {
+      campo.remove();
+    }
+  }
+
+  async function copiarCodigoConvite() {
+    window.clearTimeout(feedbackTimerRef.current);
+    try {
+      if (window.electronAPI?.copiarTexto) {
+        await window.electronAPI.copiarTexto(codigoConvite);
+      } else if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(codigoConvite);
+        } catch {
+          if (!copiarComSelecao(codigoConvite)) throw new Error('A área de transferência não aceitou o código.');
+        }
+      } else {
+        if (!copiarComSelecao(codigoConvite)) throw new Error('A área de transferência não aceitou o código.');
+      }
+      setFeedbackConvite({ sucesso: true, mensagem: 'Código de convite copiado.' });
+      feedbackTimerRef.current = window.setTimeout(() => setFeedbackConvite(null), 6000);
+    } catch (err) {
+      console.error('Não foi possível copiar o código de convite:', err);
+      setFeedbackConvite({ sucesso: false, mensagem: 'Não foi possível copiar. Selecione o código abaixo para copiá-lo manualmente.' });
+    } finally {
+      setMenuServidorAberto(false);
+    }
+  }
+
   return (
     <div className="channel-sidebar" ref={menuRef}>
       <div className="channel-sidebar__header">
@@ -90,8 +135,8 @@ export default function ChannelSidebar({
           <span>{servidorNome}</span><span className="server-name-trigger__chevron">⌄</span>
         </button>
         {menuServidorAberto && <div className="sidebar-popover server-menu">
-          {codigoConvite && <button type="button" onClick={() => { navigator.clipboard.writeText(codigoConvite); setMenuServidorAberto(false); }}><Icon nome="invite" />Convidar para o servidor</button>}
-          {codigoConvite && <button type="button" onClick={() => { navigator.clipboard.writeText(codigoConvite); setMenuServidorAberto(false); }}><Icon nome="copy" />Copiar código de convite</button>}
+          {codigoConvite && <button type="button" onClick={() => { setConviteAberto(true); setMenuServidorAberto(false); }}><Icon nome="invite" />Convidar para o servidor</button>}
+          {codigoConvite && <button type="button" onClick={copiarCodigoConvite}><Icon nome="copy" />Copiar código de convite</button>}
           {podeGerenciarCanais && <button type="button" onClick={() => { onCriarCanal('texto'); setMenuServidorAberto(false); }}><span className="menu-plus">+</span>Criar canal de texto</button>}
           {podeGerenciarCanais && <button type="button" onClick={() => { onCriarCanal('voz'); setMenuServidorAberto(false); }}><span className="menu-plus">+</span>Criar canal de voz</button>}
           {(souDono || minhasPermissoes.gerenciar_servidor) && <button type="button" onClick={() => { onAbrirServidorConfiguracao(); setMenuServidorAberto(false); }}><Icon nome="settings" />Configurações do servidor</button>}
@@ -99,6 +144,17 @@ export default function ChannelSidebar({
           <button type="button" className="sidebar-popover__danger" onClick={() => { setMenuServidorAberto(false); if (window.confirm(souDono ? `Excluir "${servidorNome}"? Isso apaga todos os canais e mensagens.` : `Sair de "${servidorNome}"?`)) souDono ? onExcluirServidor() : onSairDoServidor(); }}><Icon nome={souDono ? 'trash' : 'logout'} />{souDono ? 'Excluir servidor' : 'Sair do servidor'}</button>
         </div>}
       </div>
+
+      {feedbackConvite && <div role="status" aria-live="polite" className="sidebar-feedback" style={{ padding: '8px 12px', color: feedbackConvite.sucesso ? '#9be2c0' : '#ffb6a7', fontSize: 12 }}>
+        <div>{feedbackConvite.mensagem}</div>
+        {!feedbackConvite.sucesso && <input aria-label="Código de convite para copiar manualmente" readOnly value={codigoConvite} onFocus={(event) => event.target.select()} style={{ width: '100%', marginTop: 6, color: '#fff', background: '#171b2b', border: '1px solid rgba(193,207,245,.25)', padding: 6, userSelect: 'all' }} />}
+      </div>}
+
+      {conviteAberto && <InviteServerModal
+        servidorNome={servidorNome}
+        codigoConvite={codigoConvite}
+        onFechar={() => setConviteAberto(false)}
+      />}
 
       <div className="channel-sidebar__list">
         <div className="channel-group-label">
@@ -168,6 +224,7 @@ export default function ChannelSidebar({
                 <div className="voz-participantes-lista">
                   {listaPresenca.map((p) => {
                     const souEu = canalDeVoz?.id === c.id && p.nome === nomeUsuarioNaVoz;
+                    const estaAoVivo = canalDeVoz?.id === c.id && vozEstado.telasAtivas?.includes(p.socketId);
                     return (
                       <div key={p.socketId} className="voz-participante-item">
                         <Avatar
@@ -176,9 +233,20 @@ export default function ChannelSidebar({
                           avatarCor={souEu ? usuario.avatarCor : p.avatarCor || '#5865f2'}
                           tamanho="sm"
                         />
-                        <span style={{ flex: 1 }}>
+                        <span className="voz-participante-nome">
                           {p.nome}{souEu ? ' (você)' : ''}
                         </span>
+                        {estaAoVivo && (
+                          <button
+                            type="button"
+                            className={`voz-live-badge${vozEstado.telaSelecionadaId === p.socketId ? ' ativo' : ''}`}
+                            aria-pressed={vozEstado.telaSelecionadaId === p.socketId}
+                            title={`${vozEstado.telaSelecionadaId === p.socketId ? 'Fechar' : 'Assistir'} a transmissão de ${p.nome}`}
+                            onClick={() => onAssistirTransmissao?.(p.socketId)}
+                          >
+                            <span aria-hidden="true" /> AO VIVO
+                          </button>
+                        )}
                         {!souEu && podeExpulsarCall && (
                           <button
                             type="button"

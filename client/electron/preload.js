@@ -54,4 +54,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('atualizacao-pronta', callback);
   },
   reiniciarParaAtualizar: () => ipcRenderer.invoke('reiniciar-para-atualizar'),
+  copiarTexto: async (texto) => {
+    try {
+      return await ipcRenderer.invoke('copiar-texto', texto);
+    } catch (err) {
+      console.error('Erro ao copiar texto:', err);
+      throw err;
+    }
+  },
 });

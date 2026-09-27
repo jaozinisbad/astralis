@@ -529,6 +529,47 @@ button, input, textarea, select {
   color: #949ba4;
 }
 
+.voz-participante-nome {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voz-live-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 82, 96, .42);
+  border-radius: 5px;
+  padding: 3px 5px;
+  color: #ffb3bb;
+  background: rgba(237, 66, 69, .12);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.voz-live-badge > span,
+.voice-call-panel__live > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5364;
+  box-shadow: 0 0 8px rgba(255, 83, 100, .72);
+}
+
+.voz-live-badge:hover,
+.voz-live-badge.ativo {
+  border-color: rgba(255, 82, 96, .85);
+  color: #fff;
+  background: #d9364b;
+}
+
 .voz-participante-avatar {
   width: 20px;
   height: 20px;
@@ -636,6 +677,64 @@ button, input, textarea, select {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* Ao assistir, use o palco central do chat; fechado, o componente não
+   renderiza e não consome espaço na janela. */
+.app--transmissao-aberta > .content:not(.voice-call-panel) {
+  display: none;
+}
+
+.app--transmissao-aberta > .voice-call-panel {
+  order: 2;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.app--transmissao-aberta > .member-sidebar {
+  order: 3;
+}
+
+.voice-call-panel__header {
+  gap: 10px;
+}
+
+.voice-call-panel__header > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-call-panel__live {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #ff9da9;
+  background: rgba(237, 66, 69, .14);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .05em;
+}
+
+.voice-call-panel__close {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 9px;
+  color: #c5cbe0;
+  background: rgba(255, 255, 255, .04);
+  cursor: pointer;
+}
+
+.voice-call-panel__close:hover {
+  border-color: rgba(141, 231, 219, .42);
+  color: #fff;
+  background: rgba(141, 231, 219, .1);
 }
 
 @media (max-width: 900px) {
@@ -1061,6 +1160,33 @@ button, input, textarea, select {
 .modal-botao-primario:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.invite-modal {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.invite-modal h2,
+.invite-modal p {
+  margin: 0;
+}
+
+.invite-modal p {
+  color: #aeb6ca;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.invite-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.invite-modal__feedback {
+  color: #9be2c0;
+  font-size: 13px;
 }
 
 /* Chat de texto */
@@ -1575,6 +1701,20 @@ button, input, textarea, select {
   background: #000;
 }
 
+.tela-tile:fullscreen {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 0;
+  background: #000;
+}
+
 .tela-tile video {
   width: 100%;
   height: 100%;
@@ -1594,10 +1734,17 @@ button, input, textarea, select {
   border-radius: 4px;
 }
 
-.tela-tile__fullscreen {
+.tela-tile__controls {
   position: absolute;
   top: 8px;
-  right: 80px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tela-tile__fullscreen {
   border: 0;
   border-radius: 4px;
   padding: 6px 8px;
@@ -1610,10 +1757,26 @@ button, input, textarea, select {
   background: rgba(0, 0, 0, 0.9);
 }
 
+.tela-tile__volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 4px;
+  padding: 5px 8px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tela-tile__volume input {
+  width: 92px;
+  height: 4px;
+  accent-color: var(--accent-bright);
+  cursor: pointer;
+}
+
 .tela-tile__mutar {
-  position: absolute;
-  top: 8px;
-  right: 44px;
   border: 0;
   border-radius: 4px;
   padding: 6px 8px;
@@ -1629,9 +1792,6 @@ button, input, textarea, select {
 }
 
 .tela-tile__ocultar {
-  position: absolute;
-  top: 8px;
-  right: 8px;
   border: 0;
   border-radius: 4px;
   padding: 6px 8px;
@@ -1644,6 +1804,31 @@ button, input, textarea, select {
 
 .tela-tile__ocultar:hover {
   background: rgba(0, 0, 0, 0.9);
+}
+
+@media (max-width: 760px) {
+  .tela-tile__controls {
+    left: 8px;
+    right: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .tela-tile__volume {
+    order: 1;
+  }
+
+  .tela-tile__fullscreen {
+    order: 2;
+  }
+
+  .tela-tile__mutar {
+    order: 3;
+  }
+
+  .tela-tile__ocultar {
+    order: 4;
+  }
 }
 
 /* Chips compactos de telas que a pessoa parou de assistir — em vez de
