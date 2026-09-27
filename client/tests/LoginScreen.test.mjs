@@ -135,3 +135,41 @@ test('erro de conexão mostra mensagem amigável e não autentica', async () => 
   assert.equal(autenticado, false);
   assert.match(renderer.root.findByProps({ role: 'alert' }).children.join(''), /conectar ao servidor/i);
 });
+
+test('recuperação exige confirmação igual e envia o contrato correto sem autenticar', async () => {
+  chamadas = [];
+  globalThis.fetch = async (url, options = {}) => {
+    chamadas.push({ url: String(url), options });
+    if (String(url).endsWith('/health')) return new Promise(() => {});
+    return { ok: true, json: async () => ({ ok: true }) };
+  };
+  let autenticado = false;
+  await montar(() => { autenticado = true; });
+  await act(async () => {
+    encontrarCampo('email').props.onChange({ target: { value: 'jogador@exemplo.com' } });
+    renderer.root.findAllByType('button').find((button) => button.children.join('') === 'Esqueceu a senha?').props.onClick();
+  });
+
+  assert.equal(renderer.root.findByType('h1').children.join(''), 'Recuperar senha');
+  await act(async () => {
+    encontrarCampo('codigo').props.onChange({ target: { value: 'SUPORTE-123' } });
+    encontrarCampo('novaSenha').props.onChange({ target: { value: 'senha-nova' } });
+    encontrarCampo('confirmarSenha').props.onChange({ target: { value: 'diferente' } });
+  });
+  await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
+  assert.match(renderer.root.findByProps({ role: 'alert' }).children.join(''), /não coincidem/i);
+  assert.equal(chamadas.some(({ url }) => url.endsWith('/api/redefinir-senha')), false);
+
+  await act(async () => encontrarCampo('confirmarSenha').props.onChange({ target: { value: 'senha-nova' } }));
+  await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
+  const redefinicao = chamadas.find(({ url }) => url.endsWith('/api/redefinir-senha'));
+  assert.ok(redefinicao);
+  assert.equal(redefinicao.options.method, 'POST');
+  assert.deepEqual(JSON.parse(redefinicao.options.body), {
+    email: 'jogador@exemplo.com', codigo: 'SUPORTE-123', novaSenha: 'senha-nova',
+  });
+  assert.equal(autenticado, false);
+  assert.equal(encontrarCampo('email').props.value, 'jogador@exemplo.com');
+  assert.equal(renderer.root.findByType('h1').children.join(''), 'Entrar');
+  assert.match(renderer.root.findByProps({ role: 'status' }).children.join(''), /Senha redefinida com sucesso/);
+});

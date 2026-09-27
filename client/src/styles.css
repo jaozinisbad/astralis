@@ -2060,6 +2060,7 @@ button, input, textarea, select {
 .auth-field input:disabled { opacity: .65; }
 
 .auth-error { padding: 10px 12px; border: 1px solid rgba(255,101,116,.24); border-radius: 8px; color: #ffadb5; background: rgba(154,43,58,.14); font-size: 12px; line-height: 1.5; }
+.auth-success { padding: 10px 12px; border: 1px solid rgba(115,232,207,.28); border-radius: 8px; color: #9cf0da; background: rgba(56,145,121,.14); font-size: 12px; line-height: 1.5; }
 .auth-submit { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; padding: 0 15px; border: 0; border-radius: 9px; color: #081410; background: linear-gradient(100deg, #8bf0d6, #72dbca); box-shadow: 0 8px 24px rgba(88,220,193,.13); cursor: pointer; font-size: 13px; font-weight: 750; transition: transform .16s ease, filter .16s ease, box-shadow .16s ease; }
 .auth-submit:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 12px 28px rgba(88,220,193,.22); }
 .auth-submit:disabled { opacity: .62; cursor: wait; }

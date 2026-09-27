@@ -11,8 +11,11 @@ const { router: servidoresRoutes, ehMembro, temPermissao } = require('./routes/s
 const mensagensRoutes = require('./routes/mensagens');
 const { router: amigosRoutes, compartilhamServidor } = require('./routes/amigos');
 const { socketsPorUsuario } = require('./presenca');
+const recuperacaoRoutes = require('./routes/recuperacao');
+const eventosConta = require('./eventosConta');
 
 const app = express();
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // CORS liberado por enquanto (grupo fechado de amigos, sem exposição pública ampla).
@@ -42,6 +45,7 @@ app.get('/health', async (_req, res) => {
 });
 
 app.use('/api', authRoutes);
+app.use('/api', recuperacaoRoutes);
 app.use('/api', servidoresRoutes);
 app.use('/api', mensagensRoutes);
 app.use('/api', amigosRoutes);
@@ -124,10 +128,26 @@ io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error('Token não fornecido.'));
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, payload) => {
+  jwt.verify(token, process.env.JWT_SECRET, async (err, payload) => {
     if (err) return next(new Error('Token inválido.'));
-    socket.usuario = payload;
-    next();
+    try {
+      const usuario = await get('SELECT versao_sessao FROM usuarios WHERE id = ?', payload.id);
+      if (!usuario || Number(usuario.versao_sessao) !== Number(payload.versao_sessao ?? 0)) {
+        return next(new Error('Token inválido.'));
+      }
+      socket.usuario = payload;
+      next();
+    } catch (erro) {
+      next(erro);
+    }
+  });
+});
+
+const versoesRedefinidas = new Map();
+eventosConta.on('senha-redefinida', (usuarioId, versaoSessao) => {
+  versoesRedefinidas.set(usuarioId, Number(versaoSessao));
+  socketsPorUsuario.get(usuarioId)?.forEach((socketId) => {
+    io.sockets.sockets.get(socketId)?.disconnect(true);
   });
 });
 
@@ -138,6 +158,12 @@ io.on('connection', (socket) => {
   // amigos (quem compartilha servidor) que ele ficou online — só na
   // primeira conexão desse usuário (se ele já tinha outra aba aberta,
   // já estava online, não precisa avisar de novo).
+  // Fecha a janela entre a checagem do token e a entrada neste callback.
+  const versaoMaisRecente = versoesRedefinidas.get(socket.usuario.id);
+  if (versaoMaisRecente !== undefined && Number(socket.usuario.versao_sessao ?? 0) < versaoMaisRecente) {
+    socket.disconnect(true);
+    return;
+  }
   const jaEstavaOnline = socketsPorUsuario.has(socket.usuario.id);
   if (!socketsPorUsuario.has(socket.usuario.id)) socketsPorUsuario.set(socket.usuario.id, new Set());
   socketsPorUsuario.get(socket.usuario.id).add(socket.id);

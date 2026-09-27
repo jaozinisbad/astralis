@@ -45,11 +45,12 @@ function criarServidor({ autorizado = true, bancoDisponivel = true } = {}) {
     cors: () => () => {}, jsonwebtoken: {},
     'socket.io': { Server: function () { return io; } },
     './db': db,
-    './routes/auth': {}, './routes/mensagens': {},
+    './routes/auth': {}, './routes/mensagens': {}, './routes/recuperacao': {},
     './routes/servidores': {
       router: {}, ehMembro: async () => autorizado, temPermissao: async () => autorizado,
     },
     './routes/amigos': { router: {}, compartilhamServidor: async () => autorizado },
+    './eventosConta': { on() {} },
     './presenca': { socketsPorUsuario: new Map([[7, new Set(['socket-teste'])], [8, new Set(['amigo'])]]) },
   };
   vm.runInNewContext(readFileSync(path.join(__dirname, '../index.js'), 'utf8'), {

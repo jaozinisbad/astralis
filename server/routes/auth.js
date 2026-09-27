@@ -8,7 +8,7 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 
 function gerarToken(usuario) {
-  return jwt.sign({ id: usuario.id, nome: usuario.nome }, JWT_SECRET, {
+  return jwt.sign({ id: usuario.id, nome: usuario.nome, versao_sessao: Number(usuario.versao_sessao || 0) }, JWT_SECRET, {
     expiresIn: '30d',
   });
 }
@@ -123,7 +123,7 @@ router.patch('/perfil', autenticar, async (req, res, next) => {
 
   await run('UPDATE usuarios SET nome = ?, status = ?, avatar_cor = ?, avatar_url = ?, banner_url = ? WHERE id = ?', nome, status || 'Disponível', avatarCor, avatarUrl, bannerUrl, req.usuario.id);
 
-  const usuario = await get('SELECT id, nome, email, avatar_cor, avatar_url, banner_url, status FROM usuarios WHERE id = ?', req.usuario.id);
+  const usuario = await get('SELECT id, nome, email, avatar_cor, avatar_url, banner_url, status, versao_sessao FROM usuarios WHERE id = ?', req.usuario.id);
   const token = gerarToken(usuario);
   res.json({ token, usuario: dadosPublicos(usuario) });
  } catch (error) { next(error); }

@@ -6,7 +6,11 @@ export default function LoginScreen({ onAutenticado }) {
   const [nome, setNome] = useState('');
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
+  const [codigo, setCodigo] = useState('');
+  const [novaSenha, setNovaSenha] = useState('');
+  const [confirmarSenha, setConfirmarSenha] = useState('');
   const [erro, setErro] = useState('');
+  const [sucesso, setSucesso] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [demorando, setDemorando] = useState(false);
 
@@ -38,21 +42,39 @@ export default function LoginScreen({ onAutenticado }) {
     setCarregando(true);
 
     const cadastro = modo === 'cadastro';
+    const recuperacao = modo === 'recuperacao';
+    if (recuperacao && novaSenha !== confirmarSenha) {
+      setErro('As senhas não coincidem.');
+      setCarregando(false);
+      return;
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 90_000);
     try {
-      const resposta = await fetch(`${SERVER_URL}${cadastro ? '/api/cadastro' : '/api/login'}`, {
+      const endpoint = recuperacao ? '/api/redefinir-senha' : cadastro ? '/api/cadastro' : '/api/login';
+      const resposta = await fetch(`${SERVER_URL}${endpoint}`, {
         method: 'POST',
         signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cadastro ? { nome, email, senha } : { email, senha }),
+        body: JSON.stringify(recuperacao
+          ? { email, codigo, novaSenha }
+          : cadastro ? { nome, email, senha } : { email, senha }),
       });
       const dados = await resposta.json();
       if (!resposta.ok) {
         setErro(dados.erro || 'Não foi possível concluir. Tente novamente.');
         return;
       }
-      onAutenticado(dados.token, dados.usuario);
+      if (recuperacao) {
+        setModo('login');
+        setSenha('');
+        setCodigo('');
+        setNovaSenha('');
+        setConfirmarSenha('');
+        setSucesso('Senha redefinida com sucesso. Faça login com sua nova senha.');
+      } else {
+        onAutenticado(dados.token, dados.usuario);
+      }
     } catch (error) {
       setErro(error.name === 'AbortError'
         ? 'O servidor demorou para responder. Tente novamente em alguns instantes.'
@@ -66,9 +88,27 @@ export default function LoginScreen({ onAutenticado }) {
   function alternarModo() {
     setModo((atual) => atual === 'login' ? 'cadastro' : 'login');
     setErro('');
+    setSucesso('');
+  }
+
+  function abrirRecuperacao() {
+    setModo('recuperacao');
+    setErro('');
+    setSucesso('');
+    setSenha('');
+  }
+
+  function voltarLogin() {
+    setModo('login');
+    setErro('');
+    setSucesso('');
+    setCodigo('');
+    setNovaSenha('');
+    setConfirmarSenha('');
   }
 
   const cadastro = modo === 'cadastro';
+  const recuperacao = modo === 'recuperacao';
 
   return (
     <main className="auth-shell">
@@ -82,7 +122,8 @@ export default function LoginScreen({ onAutenticado }) {
         </div>
 
         <div className="auth-card__heading">
-          <h1 id="auth-form-title">{cadastro ? 'Criar conta' : 'Entrar'}</h1>
+          <h1 id="auth-form-title">{cadastro ? 'Criar conta' : recuperacao ? 'Recuperar senha' : 'Entrar'}</h1>
+          {recuperacao && <p>Peça ao suporte o e-mail da sua conta e um código temporário.</p>}
         </div>
 
         <form className="auth-form" onSubmit={enviar}>
@@ -116,7 +157,20 @@ export default function LoginScreen({ onAutenticado }) {
               disabled={carregando}
             />
           </label>
-          <label className="auth-field">
+          {recuperacao ? <>
+            <label className="auth-field">
+              <span>Código de recuperação</span>
+              <input type="text" name="codigo" placeholder="Código enviado pelo suporte" autoComplete="one-time-code" value={codigo} onChange={(event) => setCodigo(event.target.value)} required disabled={carregando} />
+            </label>
+            <label className="auth-field">
+              <span>Nova senha</span>
+              <input type="password" name="novaSenha" placeholder="Crie uma nova senha" autoComplete="new-password" minLength={8} maxLength={128} value={novaSenha} onChange={(event) => setNovaSenha(event.target.value)} required disabled={carregando} />
+            </label>
+            <label className="auth-field">
+              <span>Confirmar nova senha</span>
+              <input type="password" name="confirmarSenha" placeholder="Digite a nova senha novamente" autoComplete="new-password" minLength={8} maxLength={128} value={confirmarSenha} onChange={(event) => setConfirmarSenha(event.target.value)} required disabled={carregando} />
+            </label>
+          </> : <label className="auth-field">
             <span>Senha</span>
             <input
               type="password"
@@ -129,25 +183,29 @@ export default function LoginScreen({ onAutenticado }) {
               required
               disabled={carregando}
             />
-          </label>
+          </label>}
 
           {erro && <div className="auth-error" role="alert">{erro}</div>}
+          {sucesso && <div className="auth-success" role="status">{sucesso}</div>}
 
           {carregando && demorando && (
             <p role="status">A conexão está demorando. O servidor pode estar iniciando após um período sem uso. Aguarde mais alguns instantes.</p>
           )}
 
           <button className="auth-submit" type="submit" disabled={carregando}>
-            {carregando ? 'Aguarde…' : cadastro ? 'Criar conta' : 'Entrar'}
+            {carregando ? 'Aguarde…' : cadastro ? 'Criar conta' : recuperacao ? 'Redefinir senha' : 'Entrar'}
           </button>
         </form>
 
-        <div className="auth-switch">
-          <span>{cadastro ? 'Já tem uma conta?' : 'Não tem uma conta?'}</span>
-          <button type="button" onClick={alternarModo} disabled={carregando}>
-            {cadastro ? 'Entrar' : 'Criar conta'}
-          </button>
-        </div>
+        {recuperacao ? <div className="auth-switch"><button type="button" onClick={voltarLogin} disabled={carregando}>Voltar ao login</button></div> : <>
+          {!cadastro && <div className="auth-switch"><button type="button" onClick={abrirRecuperacao} disabled={carregando}>Esqueceu a senha?</button></div>}
+          <div className="auth-switch">
+            <span>{cadastro ? 'Já tem uma conta?' : 'Não tem uma conta?'}</span>
+            <button type="button" onClick={alternarModo} disabled={carregando}>
+              {cadastro ? 'Entrar' : 'Criar conta'}
+            </button>
+          </div>
+        </>}
       </section>
     </main>
   );
