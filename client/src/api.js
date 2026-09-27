@@ -6,6 +6,8 @@ export const SERVER_URL = import.meta.env.VITE_SERVER_URL || URL_PUBLICA;
 export async function apiFetch(caminho, token, opcoes = {}) {
   const resp = await fetch(`${SERVER_URL}${caminho}`, {
     ...opcoes,
+    // Dá tempo ao serviço gratuito para despertar, mas evita espera infinita.
+    signal: opcoes.signal || AbortSignal.timeout(90_000),
     headers: {
       'Content-Type': 'application/json',
       // Faz o ngrok (plano grátis) pular a página de aviso de navegador.
@@ -13,12 +15,24 @@ export async function apiFetch(caminho, token, opcoes = {}) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(opcoes.headers || {}),
     },
+  }).catch((erro) => {
+    if (erro.name === 'TimeoutError') {
+      throw new Error('O servidor demorou para responder. Tente novamente em alguns instantes.');
+    }
+    throw erro;
   });
   const dados = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const erro = new Error(dados.erro || (resp.status === 401 || resp.status === 403 ? 'Sua sessão expirou. Entre novamente.' : 'Erro ao falar com o servidor.'));
+    const sessaoInvalida = resp.status === 401 || (
+      resp.status === 403 && dados.erro === 'Token inválido ou expirado.'
+    ); // Compatibilidade com versões antigas do backend.
+    const erro = new Error(dados.erro || (sessaoInvalida
+      ? 'Sua sessão expirou. Entre novamente.'
+      : resp.status === 403 ? 'Você não tem permissão para esta ação.' : 'Erro ao falar com o servidor.'));
     erro.status = resp.status;
-    if (resp.status === 401 || resp.status === 403) {
+    // Apenas uma chamada que enviou credenciais pode invalidar a sessão.
+    // 403 também é usado para negar permissões e deve preservar o login.
+    if (token && sessaoInvalida) {
       localStorage.removeItem('sessao');
       window.dispatchEvent(new Event('sessao-invalida'));
     }

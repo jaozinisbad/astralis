@@ -3,7 +3,6 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import react from '@vitejs/plugin-react';
 import { createServer } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -14,8 +13,9 @@ before(async () => {
   vite = await createServer({
     configFile: false,
     root,
-    plugins: [react()],
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false, ws: false },
+    optimizeDeps: { noDiscovery: true, include: [] },
+    ssr: { optimizeDeps: { noDiscovery: true, include: [] } },
     appType: 'custom',
   });
   ({ default: ServerSidebar } = await vite.ssrLoadModule('/src/components/ServerSidebar.jsx'));

@@ -25,8 +25,15 @@ export default function App() {
   const [socket, setSocket] = useState(null);
 
   const [servidores, setServidores] = useState([]);
+  const [servidoresCarregando, setServidoresCarregando] = useState(() => !!sessao);
+  const [erroServidores, setErroServidores] = useState('');
+  const [tentativaServidores, setTentativaServidores] = useState(0);
   const [servidorAtivoId, setServidorAtivoId] = useState(null);
   const [canais, setCanais] = useState([]);
+  const [canaisCarregando, setCanaisCarregando] = useState(false);
+  const [canaisServidorId, setCanaisServidorId] = useState(null);
+  const [erroCanais, setErroCanais] = useState('');
+  const [tentativaCanais, setTentativaCanais] = useState(0);
   const [membrosServidor, setMembrosServidor] = useState([]);
   const [cargosServidor, setCargosServidor] = useState([]);
   const [canalAtivo, setCanalAtivo] = useState(null);
@@ -67,11 +74,7 @@ export default function App() {
 
   useEffect(() => {
     function aoInvalidarSessao() {
-      setSessao(null);
-      setSocket((atual) => {
-        atual?.disconnect();
-        return null;
-      });
+      sair();
     }
     window.addEventListener('sessao-invalida', aoInvalidarSessao);
     return () => window.removeEventListener('sessao-invalida', aoInvalidarSessao);
@@ -94,21 +97,39 @@ export default function App() {
 
   // Carrega os servidores do usuário assim que loga.
   useEffect(() => {
-    if (!sessao) return;
+    let ativo = true;
+    if (!sessao) {
+      setServidoresCarregando(false);
+      setErroServidores('');
+      return () => { ativo = false; };
+    }
+
+    setServidoresCarregando(true);
+    setErroServidores('');
     apiFetch('/api/servidores', sessao.token)
       .then((lista) => {
+        if (!ativo) return;
         setServidores(lista);
-        if (lista.length > 0) setServidorAtivoId(lista[0].id);
+        setServidorAtivoId(lista[0]?.id ?? null);
       })
-      .catch(() => {});
-  }, [sessao]);
+      .catch((erro) => {
+        if (!ativo) return;
+        setErroServidores(erro.message || 'Não foi possível carregar seus servidores.');
+      })
+      .finally(() => {
+        if (ativo) setServidoresCarregando(false);
+      });
+    return () => { ativo = false; };
+  }, [sessao, tentativaServidores]);
 
   // Carrega a lista de amigos assim que loga.
   useEffect(() => {
     if (!sessao) return;
+    let ativo = true;
     apiFetch('/api/amigos', sessao.token)
-      .then(setAmigos)
+      .then((lista) => { if (ativo) setAmigos(lista); })
       .catch(() => {});
+    return () => { ativo = false; };
   }, [sessao]);
 
   // Atualiza a lista de amigos em tempo real quando alguém fica online/offline
@@ -163,36 +184,77 @@ export default function App() {
 
   // Carrega os canais sempre que o servidor ativo muda.
   useEffect(() => {
-    if (!sessao || !servidorAtivoId) return;
+    let ativo = true;
+    if (!sessao || !servidorAtivoId) {
+      setCanaisCarregando(false);
+      setErroCanais('');
+      setCanais([]);
+      setCanalAtivo(null);
+      setCanaisServidorId(null);
+      setMembrosServidor([]);
+      setCargosServidor([]);
+      return () => { ativo = false; };
+    }
+
+    setCanaisCarregando(true);
+    setErroCanais('');
+    setCanais([]);
+    setCanalAtivo(null);
+    setMembrosServidor([]);
+    setCargosServidor([]);
     apiFetch(`/api/servidores/${servidorAtivoId}/canais`, sessao.token)
       .then((lista) => {
+        if (!ativo) return;
         setCanais(lista);
         setCanalAtivo(lista[0] || null);
       })
-      .catch(() => {});
+      .catch((erro) => {
+        if (!ativo) return;
+        setErroCanais(erro.message || 'Não foi possível carregar os canais.');
+      })
+      .finally(() => {
+        if (ativo) {
+          setCanaisServidorId(servidorAtivoId);
+          setCanaisCarregando(false);
+        }
+      });
     apiFetch(`/api/servidores/${servidorAtivoId}/membros`, sessao.token)
-      .then(setMembrosServidor)
-      .catch(() => setMembrosServidor([]));
+      .then((lista) => { if (ativo) setMembrosServidor(lista); })
+      .catch(() => { if (ativo) setMembrosServidor([]); });
     apiFetch(`/api/servidores/${servidorAtivoId}/cargos`, sessao.token)
-      .then(setCargosServidor)
-      .catch(() => setCargosServidor([]));
-  }, [sessao, servidorAtivoId]);
+      .then((lista) => { if (ativo) setCargosServidor(lista); })
+      .catch(() => { if (ativo) setCargosServidor([]); });
+    return () => { ativo = false; };
+  }, [sessao, servidorAtivoId, tentativaCanais]);
 
   function autenticar(token, usuario) {
     const novaSessao = { token, usuario };
     localStorage.setItem('sessao', JSON.stringify(novaSessao));
+    setServidoresCarregando(true);
+    setErroServidores('');
     setSessao(novaSessao);
   }
 
   function sair() {
     localStorage.removeItem('sessao');
-    socket?.disconnect();
+    setSocket((atual) => {
+      atual?.disconnect();
+      return null;
+    });
     setSessao(null);
     setServidores([]);
     setServidorAtivoId(null);
     setCanais([]);
     setCanalAtivo(null);
     setCanalDeVoz(null);
+    setPresencaVoz({});
+    setMembrosServidor([]);
+    setCargosServidor([]);
+    setPerfilAberto(false);
+    setSettingsAberto(false);
+    setServidorConfiguracaoAberto(false);
+    setPickerTelaAberto(false);
+    setModalAberto(false);
     setAmigos([]);
     setDmAtiva(null);
     setView('servidor');
@@ -345,6 +407,7 @@ export default function App() {
   }
 
   const servidorAtivo = servidores.find((s) => s.id === servidorAtivoId);
+  const aguardandoCanais = canaisCarregando || (servidorAtivo && canaisServidorId !== servidorAtivoId);
   const usuarioLogado = {
     nome: sessao.usuario.nome,
     status: sessao.usuario.status,
@@ -387,7 +450,7 @@ export default function App() {
         onAbrirModal={() => setModalAberto(true)}
       />
 
-      {view === 'servidor' && servidorAtivo && canalAtivo && (
+      {view === 'servidor' && !servidoresCarregando && !erroServidores && !aguardandoCanais && !erroCanais && servidorAtivo && canalAtivo && (
         <>
           <ChannelSidebar
             servidorNome={servidorAtivo.nome}
@@ -426,7 +489,32 @@ export default function App() {
         </>
       )}
 
-      {view === 'servidor' && (!servidorAtivo || !canalAtivo) && (
+      {view === 'servidor' && servidoresCarregando && (
+        <div className="content server-empty-screen">
+          <div className="content__body server-empty-screen__body">
+            <div className="server-empty-card" role="status" aria-live="polite">
+              <h1>Carregando seus servidores…</h1>
+              <p>A primeira conexão pode demorar alguns segundos enquanto o servidor desperta.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'servidor' && !servidoresCarregando && erroServidores && (
+        <div className="content server-empty-screen">
+          <div className="content__body server-empty-screen__body">
+            <div className="server-empty-card" role="alert">
+              <h1>Não foi possível carregar seus servidores</h1>
+              <p>{erroServidores}</p>
+              <button type="button" onClick={() => setTentativaServidores((valor) => valor + 1)}>
+                Tentar novamente
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'servidor' && !servidoresCarregando && !erroServidores && servidores.length === 0 && (
         <div className="content server-empty-screen">
           <div className="content__body server-empty-screen__body">
             <div className="server-empty-card">
@@ -438,6 +526,42 @@ export default function App() {
               <button type="button" onClick={() => setModalAberto(true)}>
                 Criar ou entrar
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'servidor' && !servidoresCarregando && !erroServidores && servidorAtivo && aguardandoCanais && (
+        <div className="content server-empty-screen">
+          <div className="content__body server-empty-screen__body">
+            <div className="server-empty-card" role="status" aria-live="polite">
+              <h1>Carregando canais…</h1>
+              <p>A primeira conexão pode demorar alguns segundos enquanto o servidor desperta.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'servidor' && !servidoresCarregando && !erroServidores && servidorAtivo && !aguardandoCanais && erroCanais && (
+        <div className="content server-empty-screen">
+          <div className="content__body server-empty-screen__body">
+            <div className="server-empty-card" role="alert">
+              <h1>Não foi possível carregar os canais</h1>
+              <p>{erroCanais}</p>
+              <button type="button" onClick={() => setTentativaCanais((valor) => valor + 1)}>
+                Tentar novamente
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {view === 'servidor' && !servidoresCarregando && !erroServidores && servidorAtivo && !aguardandoCanais && !erroCanais && canais.length === 0 && (
+        <div className="content server-empty-screen">
+          <div className="content__body server-empty-screen__body">
+            <div className="server-empty-card">
+              <h1>Nenhum canal</h1>
+              <p>Este servidor ainda não tem canais.</p>
             </div>
           </div>
         </div>

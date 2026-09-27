@@ -10,7 +10,7 @@ function autenticar(req, res, next) {
 
   jwt.verify(token, process.env.JWT_SECRET, (err, payload) => {
     if (err) {
-      return res.status(403).json({ erro: 'Token inválido ou expirado.' });
+      return res.status(401).json({ erro: 'Token inválido ou expirado.' });
     }
     req.usuario = payload;
     next();

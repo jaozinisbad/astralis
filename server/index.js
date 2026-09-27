@@ -30,6 +30,17 @@ app.get('/', (req, res) => {
   res.send('Servidor do app de comunicação está no ar!');
 });
 
+// Verifica também o banco, que pode estar retomando após inatividade.
+app.get('/health', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    await get('SELECT 1');
+    res.json({ status: 'ok' });
+  } catch {
+    res.status(503).json({ status: 'unavailable' });
+  }
+});
+
 app.use('/api', authRoutes);
 app.use('/api', servidoresRoutes);
 app.use('/api', mensagensRoutes);
@@ -157,7 +168,7 @@ io.on('connection', (socket) => {
       canalId, socket.usuario.id, texto, anexo?.nome || null, anexo?.tipo || null, anexo?.url || null, Number(anexo?.tamanho) || null);
 
     const mensagem = {
-      id: resultado.lastInsertRowid,
+      id: resultado.id,
       conteudo: texto,
       autor: socket.usuario.nome,
       usuario_id: socket.usuario.id,
@@ -280,7 +291,7 @@ io.on('connection', (socket) => {
       socket.usuario.id, paraUsuarioId, conteudo.trim());
 
     const mensagem = {
-      id: resultado.lastInsertRowid,
+      id: resultado.id,
       conteudo: conteudo.trim(),
       remetente_id: socket.usuario.id,
       criado_em: new Date().toISOString(),
