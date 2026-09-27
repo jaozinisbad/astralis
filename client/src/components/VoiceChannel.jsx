@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
 
 // Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
 // a descobrirem como se alcançar através da internet (NAT traversal).
@@ -113,6 +114,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const audiosRef = useRef({}); // socketId -> HTMLAudioElement (microfone)
   const audiosTelaRef = useRef({}); // socketId -> HTMLAudioElement (áudio do sistema de quem compartilha tela)
   const audioMudoRef = useRef(false);
+  const telaSelecionadaRef = useRef(null);
   const telasMutadasRef = useRef(new Set());
   const volumesTelasRef = useRef({});
   const contextoAudioRef = useRef(null); // contexto só dos efeitos sonoros
@@ -447,7 +449,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           // stream, é o áudio do sistema de quem está compartilhando a
           // tela — precisa de um elemento <audio> separado do
           // microfone, senão um substitui o outro.
-          const ehAudioDeTela = e.streams[0]?.getVideoTracks().length > 0;
+          const streamRemoto = e.streams[0];
+          // O áudio da tela pode chegar antes do vídeo na renegociação.
+          const ehAudioDeTela = streamRemoto?.getVideoTracks().length > 0
+            || (audiosRef.current[socketId]?.srcObject
+              && audiosRef.current[socketId].srcObject !== streamRemoto);
           const bucket = ehAudioDeTela ? audiosTelaRef : audiosRef;
 
           let audio = bucket.current[socketId];
@@ -455,7 +461,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             audio = new Audio();
             audio.autoplay = true;
             audio.muted = ehAudioDeTela
-              ? telasMutadasRef.current.has(socketId)
+              ? audioMudoRef.current || telasMutadasRef.current.has(socketId) || telaSelecionadaRef.current !== socketId
               : audioMudoRef.current;
             const volumeSaida = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
             audio.volume = ehAudioDeTela
@@ -466,8 +472,36 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             }
             bucket.current[socketId] = audio;
           }
-          audio.srcObject = e.streams[0];
+          audio.srcObject = streamRemoto;
+          if (ehAudioDeTela) {
+            audio.volume = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100
+              * (volumesTelasRef.current[socketId] ?? 100) / 100;
+            sincronizarAudioDasTelas();
+          } else {
+            audio.muted = audioMudoRef.current;
+            audio.volume = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
+          }
         } else if (e.track.kind === 'video') {
+          // Reclassifica o áudio caso a faixa de vídeo chegue depois dele.
+          const audioInicial = audiosRef.current[socketId];
+          if (audioInicial?.srcObject === e.streams[0]) {
+            const audioClassificadoComoTela = audiosTelaRef.current[socketId];
+            if (audioClassificadoComoTela?.srcObject && audioClassificadoComoTela.srcObject !== e.streams[0]) {
+              audiosRef.current[socketId] = audioClassificadoComoTela;
+              audioClassificadoComoTela.muted = audioMudoRef.current;
+              audioClassificadoComoTela.volume = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
+            } else {
+              if (audioClassificadoComoTela) {
+                audioClassificadoComoTela.pause();
+                audioClassificadoComoTela.srcObject = null;
+              }
+              delete audiosRef.current[socketId];
+            }
+            audiosTelaRef.current[socketId] = audioInicial;
+            audioInicial.volume = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100
+              * (volumesTelasRef.current[socketId] ?? 100) / 100;
+            sincronizarAudioDasTelas();
+          }
           if (!telasComSomRef.current.has(socketId)) {
             telasComSomRef.current.add(socketId);
             tocarEfeito('transmissaoRecebida');
@@ -662,6 +696,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     Object.values(audiosRef.current).forEach((audio) => {
       audio.muted = novoEstado;
     });
+    sincronizarAudioDasTelas();
     setAudioMudo(novoEstado);
   }
 
@@ -926,8 +961,16 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     setTelaSelecionadaId((atual) => atual === socketId ? null : socketId);
   }
 
-  // Muda só o áudio, sem parar de ver a tela (diferente de "parar de
-  // assistir", que esconde tudo). Cada tela compartilhada tem seu áudio
+  function sincronizarAudioDasTelas() {
+    sincronizarReproducaoDasTelas(audiosTelaRef.current, {
+      audioMudo: audioMudoRef.current,
+      telasMutadas: telasMutadasRef.current,
+      telaSelecionadaId: telaSelecionadaRef.current,
+    });
+  }
+
+  // Muda só o áudio, sem parar de ver a tela. Fechar a transmissão também
+  // para sua reprodução de áudio. Cada tela compartilhada tem seu áudio
   // próprio — isso não mexe no seu microfone nem no áudio de mais
   // ninguém na call.
   function alternarMuteTela(socketId) {
@@ -936,9 +979,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     else copia.add(socketId);
     telasMutadasRef.current = copia;
     setTelasMutadas(copia);
-    if (audiosTelaRef.current[socketId]) {
-      audiosTelaRef.current[socketId].muted = copia.has(socketId);
-    }
+    sincronizarAudioDasTelas();
   }
 
   function alterarVolumeTela(socketId, volume) {
@@ -958,6 +999,11 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     ? telaLocalRef.current
     : telasRemotas[telaSelecionadaId];
   const participanteSelecionado = participantes.find((p) => p.socketId === telaSelecionadaId);
+
+  useEffect(() => {
+    telaSelecionadaRef.current = telaSelecionadaId;
+    sincronizarAudioDasTelas();
+  }, [telaSelecionadaId]);
 
   useEffect(() => {
     if (!telaSelecionadaId) return;
