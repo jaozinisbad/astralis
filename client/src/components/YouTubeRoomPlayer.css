@@ -1,0 +1,141 @@
+.youtube-room-player {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: #08090d;
+  color: #f4f4f5;
+}
+
+.youtube-room-player__viewport {
+  position: relative;
+  width: 100%;
+  min-height: 200px;
+  aspect-ratio: 16 / 9;
+  background: #050608;
+}
+
+.youtube-room-player__mount,
+.youtube-room-player__mount iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.youtube-room-player__mount {
+  position: absolute;
+  inset: 0;
+}
+
+.youtube-room-player__message,
+.youtube-room-player__start-overlay {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 20px;
+  color: #e4e4e7;
+  text-align: center;
+}
+
+.youtube-room-player__message {
+  pointer-events: none;
+}
+
+.youtube-room-player__start-overlay {
+  flex-direction: column;
+  gap: 12px;
+  background: rgba(5, 6, 8, 0.72);
+}
+
+.youtube-room-player__start-overlay .youtube-room-player__message {
+  position: static;
+  display: block;
+  padding: 0;
+}
+
+.youtube-room-player__start,
+.youtube-room-player__toggle {
+  min-height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  background: #702ee6;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.youtube-room-player__start {
+  padding: 0 16px;
+}
+
+.youtube-room-player__controls {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  background: #111218;
+}
+
+.youtube-room-player__toggle {
+  flex: 0 0 auto;
+  padding: 0 13px;
+}
+
+.youtube-room-player__timeline {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  grid-template-columns: auto minmax(40px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.youtube-room-player__timeline input {
+  width: 100%;
+  min-width: 0;
+  accent-color: #8b45f5;
+  cursor: pointer;
+}
+
+.youtube-room-player__time {
+  color: #b7b8c2;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.youtube-room-player button:focus-visible,
+.youtube-room-player input:focus-visible {
+  outline: 2px solid #c4a1ff;
+  outline-offset: 3px;
+}
+
+.youtube-room-player button:disabled,
+.youtube-room-player input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (max-width: 520px) {
+  .youtube-room-player__controls {
+    gap: 9px;
+    padding: 8px;
+  }
+
+  .youtube-room-player__timeline {
+    gap: 6px;
+  }
+
+  .youtube-room-player__time {
+    font-size: 11px;
+  }
+}

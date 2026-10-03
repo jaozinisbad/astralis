@@ -468,6 +468,8 @@ export default function App() {
         joinedInitially: true,
         presenterSocketId: resposta.presenterSocketId ?? resposta.room.presenterSocketId ?? null,
         presenterName: resposta.presenterName ?? resposta.room.presenterName ?? null,
+        youtubeSource: resposta.youtubeSource || null,
+        youtubePlayback: resposta.youtubePlayback || null,
       });
       alterarEnderecoDaSala(roomIdResolvido);
       return { ok: true };
@@ -491,6 +493,8 @@ export default function App() {
       role: 'host',
       joinedInitially: true,
       accessCode: resposta.accessCode || '',
+      youtubeSource: resposta.youtubeSource || null,
+      youtubePlayback: resposta.youtubePlayback || null,
     });
     setScreenStream(null);
     setScreenQuality(null);
@@ -556,6 +560,7 @@ export default function App() {
               quality={screenQuality || undefined}
               onRequestShare={() => setPickerTelaAberto(true)}
               onStopShare={pararCompartilhamentoDaSala}
+              onOpenSettings={() => setPickerTelaAberto(true)}
               onExit={fecharSala}
             />
             {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
@@ -604,6 +609,7 @@ export default function App() {
               quality={screenQuality || undefined}
               onRequestShare={() => setPickerTelaAberto(true)}
               onStopShare={pararCompartilhamentoDaSala}
+              onOpenSettings={() => setPickerTelaAberto(true)}
               onExit={fecharSala}
             />
             {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}

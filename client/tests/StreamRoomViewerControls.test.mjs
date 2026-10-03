@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
 import { createServer } from 'vite';
+import { parseYouTubeVideoId } from '../src/youtubeVideoId.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 let vite;
@@ -45,7 +46,7 @@ afterEach(async () => {
   else globalThis.RTCPeerConnection = originalRTCPeerConnection;
 });
 
-async function renderViewer({ volumeWritable = true, nativeFullscreen = false, fullscreenRejects = false, nativeVideoFullscreen = false, room = { id: 'room-1', name: 'Partida', isLive: true }, entryRoom = room, socketId = 'viewer-1', onRequestShare = () => {}, onStopShare = () => {}, localStream = null, joinedInitially = false, accessCode = '' } = {}) {
+async function renderViewer({ volumeWritable = true, nativeFullscreen = false, fullscreenRejects = false, nativeVideoFullscreen = false, room = { id: 'room-1', name: 'Partida', isLive: true }, entryRoom = room, requiredAccessCode = null, socketId = 'viewer-1', onRequestShare = () => {}, onStopShare = () => {}, localStream = null, joinedInitially = false, accessCode = '', role = 'viewer' } = {}) {
   peerConnections = [];
   globalThis.RTCPeerConnection = FakePeerConnection;
   let playCalls = 0;
@@ -72,9 +73,15 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
       emittedEvents.push(event);
       emittedPayloads.push({ event, payload });
       if (event === 'salas:entrar') {
-        callback?.({ ok: true, room: { ...entryRoom }, presenterSocketId: entryRoom.presenterSocketId ?? null });
+        callback?.(requiredAccessCode && payload?.accessCode !== requiredAccessCode
+          ? { ok: false, error: 'Código de acesso inválido.' }
+          : { ok: true, room: { ...entryRoom }, presenterSocketId: entryRoom.presenterSocketId ?? null, youtubeSource: entryRoom.youtubeSource || null, youtubePlayback: entryRoom.youtubePlayback || null });
       } else if (event === 'salas:ao-vivo' && payload?.isLive) {
         callback?.({ ok: true, room: { ...room, isLive: true, presenterSocketId: socket.id, presenterName: 'Visitante' }, presenterSocketId: socket.id, presenterName: 'Visitante', peerSocketIds: [] });
+      } else if (event === 'sala:youtube:fonte') {
+        callback?.({ ok: true, source: payload.videoId ? { videoId: payload.videoId } : null, playback: { action: payload.videoId ? 'play' : 'pause', currentTime: 0, updatedAt: Date.now(), revision: 1 } });
+      } else if (event === 'sala:youtube:reproducao') {
+        callback?.({ ok: true, playback: { action: payload.action, currentTime: payload.currentTime, updatedAt: Date.now(), revision: 1 } });
       } else callback?.({ ok: true, room: { ...room } });
     },
   };
@@ -84,7 +91,7 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
     renderer = TestRenderer.create(React.createElement(StreamRoom, {
       socket,
       roomId: 'room-1',
-      role: 'viewer',
+      role,
       room,
       accessCode,
       localStream,
@@ -329,6 +336,33 @@ test('a transmitting member rejoins and restores the screen share after the sock
   assert.equal(renderer.root.findAllByType('video').length, 1, 'the local capture remains attached');
 });
 
+test('a viewer keeps a code entered in the room gate when the socket reconnects', async () => {
+  const { socket, listeners, emittedPayloads, renderer } = await renderViewer({
+    room: { id: 'room-1', name: 'Partida', isLive: false },
+    entryRoom: { id: 'room-1', name: 'Partida', isLive: false },
+    requiredAccessCode: 'ROOM42',
+  });
+
+  await act(async () => new Promise((resolve) => setImmediate(resolve)));
+  const codeInput = renderer.root.findByProps({ id: 'stream-room-code' });
+  await act(async () => codeInput.props.onChange({ target: { value: 'ROOM42' } }));
+  await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }));
+
+  await act(async () => {
+    socket.connected = false;
+    listeners.get('disconnect')();
+  });
+  await act(async () => {
+    socket.connected = true;
+    await listeners.get('connect')();
+  });
+
+  const entries = emittedPayloads.filter(({ event }) => event === 'salas:entrar');
+  assert.equal(entries.length, 3, 'the viewer should attempt the initial join, code join, and reconnect');
+  assert.equal(entries.at(-1).payload.accessCode, 'ROOM42');
+  assert.equal(renderer.root.findAllByProps({ children: 'Esta transmissão terminou' }).length, 0);
+});
+
 test('a member cannot replace another active presenter mid-stream', async () => {
   const { renderer } = await renderViewer({
     room: { id: 'room-1', name: 'Partida', isLive: true, presenterSocketId: 'other-presenter', presenterName: 'Alex' },
@@ -351,4 +385,65 @@ test('a member who is transmitting can stop their own screen share', async () =>
   assert.ok(stopButton, 'a participant presenter should have a stop control');
   await act(async () => stopButton.props.onClick());
   assert.equal(stops, 1);
+});
+
+test('room uses a stage and participant sidebar with a bottom action dock', async () => {
+  const { renderer } = await renderViewer({
+    room: { id: 'room-1', name: 'Partida', ownerName: 'Júlia', viewerCount: 2, isLive: false },
+  });
+
+  assert.ok(renderer.root.findByProps({ className: 'stream-room-workspace' }));
+  assert.ok(renderer.root.findByProps({ 'aria-label': 'Participantes da sala' }));
+  assert.ok(renderer.root.findByProps({ className: 'stream-room-action-bar' }));
+  assert.equal(renderer.root.findAll((node) => node.type === 'input' && /mensagem/i.test(node.props.placeholder || '')).length, 0);
+  assert.equal(renderer.root.findAll((node) => node.type === 'button' && /microfone|fones|câmera/i.test(node.props['aria-label'] || '')).length, 0);
+});
+
+test('host can add one validated YouTube link and the video becomes the room stage', async () => {
+  const { renderer, emittedPayloads } = await renderViewer({
+    role: 'host',
+    joinedInitially: true,
+    room: { id: 'room-1', name: 'Partida', ownerName: 'Júlia', visibility: 'public', viewerCount: 0, isLive: false },
+  });
+  const addSource = renderer.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Adicionar fonte do YouTube');
+  assert.ok(addSource);
+  await act(async () => addSource.props.onClick());
+
+  const input = renderer.root.findByProps({ id: 'stream-youtube-url' });
+  await act(async () => input.props.onChange({ target: { value: 'https://youtu.be/dQw4w9WgXcQ' } }));
+  const form = renderer.root.findByType('form');
+  await act(async () => form.props.onSubmit({ preventDefault() {} }));
+
+  assert.ok(emittedPayloads.some(({ event, payload }) => event === 'sala:youtube:fonte' && payload.videoId === 'dQw4w9WgXcQ'));
+  assert.ok(renderer.root.findByProps({ className: 'youtube-room-player' }));
+  assert.equal(renderer.root.findAllByType('video').length, 0, 'YouTube is embedded directly rather than captured as a screen stream');
+});
+
+test('host form accepts the scheme-less YouTube links supported by the parser', async () => {
+  const { renderer } = await renderViewer({
+    role: 'host',
+    joinedInitially: true,
+    room: { id: 'room-1', name: 'Partida', ownerName: 'Júlia', visibility: 'public', viewerCount: 0, isLive: false },
+  });
+  const addSource = renderer.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Adicionar fonte do YouTube');
+  await act(async () => addSource.props.onClick());
+
+  const input = renderer.root.findByProps({ id: 'stream-youtube-url' });
+  assert.equal(parseYouTubeVideoId('youtube.com/watch?v=dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+  assert.notEqual(input.props.type, 'url', 'browser-native URL validation must not reject a supported scheme-less link');
+});
+
+test('a viewer entering a room with an existing YouTube source renders its direct player', async () => {
+  const { renderer } = await renderViewer({
+    room: {
+      id: 'room-1', name: 'Partida', ownerName: 'Júlia', viewerCount: 1, isLive: false,
+      youtubeSource: { videoId: 'dQw4w9WgXcQ' },
+      youtubePlayback: { action: 'play', currentTime: 22, updatedAt: new Date().toISOString(), revision: 1 },
+    },
+    joinedInitially: true,
+  });
+
+  assert.ok(renderer.root.findByProps({ className: 'youtube-room-player' }));
+  assert.equal(renderer.root.findAllByType('video').length, 0, 'YouTube playback does not use a WebRTC video element');
+  assert.ok(renderer.root.findByProps({ className: 'youtube-room-player__controls' }));
 });

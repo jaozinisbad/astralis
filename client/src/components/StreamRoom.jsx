@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createStreamRoomPeerSession } from '../streamRoomPeer.mjs';
+import { parseYouTubeVideoId } from '../youtubeVideoId.mjs';
+import StreamRoomActionBar from './StreamRoomActionBar.jsx';
+import YouTubeRoomPlayer from './YouTubeRoomPlayer.jsx';
 
 const EMPTY_QUALITY = Object.freeze({});
 
@@ -33,9 +36,14 @@ export default function StreamRoom({
   quality = EMPTY_QUALITY,
   onRequestShare = () => {},
   onStopShare = () => {},
+  onOpenSettings = () => {},
   onExit = () => {},
 }) {
   const [room, setRoom] = useState(initialRoom);
+  const [youtubeSource, setYoutubeSource] = useState(initialRoom?.youtubeSource || null);
+  const [youtubePlayback, setYoutubePlayback] = useState(initialRoom?.youtubePlayback || null);
+  const [youtubeDialogOpen, setYoutubeDialogOpen] = useState(false);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
   const peerRole = room?.presenterSocketId === socket?.id ? 'host' : 'viewer';
   const [remoteStream, setRemoteStream] = useState(null);
   const [joined, setJoined] = useState(Boolean(joinedInitially));
@@ -104,14 +112,27 @@ export default function StreamRoom({
         peerSessionRef.current?.resetPeers();
       }
     };
+    const onYouTubeState = (message = {}) => {
+      if (message.salaId !== roomId) return;
+      setYoutubeSource(message.source || null);
+      setYoutubePlayback(message.playback || null);
+    };
+    const onYouTubePlayback = (message = {}) => {
+      if (message.salaId !== roomId) return;
+      setYoutubePlayback(message.playback || null);
+    };
     socket.on('sala:encerrada', onClosed);
     socket.on('sala:estado', onRoomState);
     socket.on('sala:transmissao', onTransmission);
+    socket.on('sala:youtube:estado', onYouTubeState);
+    socket.on('sala:youtube:reproducao', onYouTubePlayback);
 
     return () => {
       socket.off('sala:encerrada', onClosed);
       socket.off('sala:estado', onRoomState);
       socket.off('sala:transmissao', onTransmission);
+      socket.off('sala:youtube:estado', onYouTubeState);
+      socket.off('sala:youtube:reproducao', onYouTubePlayback);
       peerSession.close();
       peerSessionRef.current = null;
     };
@@ -142,7 +163,7 @@ export default function StreamRoom({
     const onConnect = async () => {
       if (!reconnectRequiredRef.current) return;
       reconnectRequiredRef.current = false;
-      const rejoined = await entrar(initialAccessCode);
+      const rejoined = await entrar(code);
       if (rejoined) {
         setReconnecting(false);
         setError('');
@@ -158,7 +179,7 @@ export default function StreamRoom({
       socket.off('disconnect', onDisconnect);
       socket.off('connect', onConnect);
     };
-  }, [socket, roomId, initialAccessCode, localStream, onStopShare]);
+  }, [socket, roomId, initialAccessCode, code, localStream, onStopShare]);
 
   useEffect(() => {
     peerSessionRef.current?.setLocalStream(localStream);
@@ -267,6 +288,8 @@ export default function StreamRoom({
       return false;
     }
     setRoom(salaComPresenter(resposta));
+    setYoutubeSource(resposta.youtubeSource || null);
+    setYoutubePlayback(resposta.youtubePlayback || null);
     presenterPeerIdsRef.current = resposta.peerSocketIds || [];
     joinedRef.current = true;
     setJoined(true);
@@ -305,6 +328,60 @@ export default function StreamRoom({
     const resposta = await emitir(socket, 'salas:ao-vivo', { roomId, isLive: false });
     if (resposta.ok) setRoom(salaComPresenter(resposta));
     else setError(resposta.error || 'Não foi possível encerrar a transmissão.');
+  }
+
+  function abrirFonteYouTube() {
+    if (role !== 'host') {
+      setError('Somente o anfitrião pode adicionar ou trocar a fonte do YouTube.');
+      return;
+    }
+    if (room?.isLive) {
+      setError('Pare a transmissão de tela antes de adicionar uma fonte do YouTube.');
+      return;
+    }
+    setError('');
+    setYoutubeUrl('');
+    setYoutubeDialogOpen(true);
+  }
+
+  async function salvarFonteYouTube(event) {
+    event.preventDefault();
+    const videoId = parseYouTubeVideoId(youtubeUrl);
+    if (!videoId) {
+      setError('Cole um link válido de um vídeo do YouTube.');
+      return;
+    }
+    const resposta = await emitir(socket, 'sala:youtube:fonte', { roomId, videoId });
+    if (!resposta.ok) {
+      setError(resposta.error || 'Não foi possível adicionar o vídeo do YouTube.');
+      return;
+    }
+    setYoutubeSource(resposta.source || { videoId });
+    setYoutubePlayback(resposta.playback || { action: 'pause', currentTime: 0, revision: 0 });
+    setYoutubeDialogOpen(false);
+    setYoutubeUrl('');
+    setError('');
+  }
+
+  async function removerFonteYouTube() {
+    const resposta = await emitir(socket, 'sala:youtube:fonte', { roomId, videoId: null });
+    if (!resposta.ok) {
+      setError(resposta.error || 'Não foi possível remover a fonte do YouTube.');
+      return;
+    }
+    setYoutubeSource(null);
+    setYoutubePlayback(null);
+    setYoutubeDialogOpen(false);
+    setYoutubeUrl('');
+  }
+
+  async function enviarComandoYouTube(action, currentTime) {
+    const resposta = await emitir(socket, 'sala:youtube:reproducao', { roomId, action, currentTime });
+    if (!resposta.ok) {
+      setError(resposta.error || 'Não foi possível sincronizar o vídeo.');
+      return;
+    }
+    if (resposta.playback) setYoutubePlayback(resposta.playback);
   }
 
   function ajustarVolume(event) {
@@ -372,6 +449,11 @@ export default function StreamRoom({
   const isRoomOwner = role === 'host';
   const isCurrentPresenter = room?.presenterSocketId === socket?.id;
   const occupiedByAnother = Boolean(room?.isLive && !isCurrentPresenter);
+  const hasActiveYoutubeSource = Boolean(youtubeSource?.videoId);
+  const presenterIsSeparateParticipant = Boolean(room?.presenterName && room.presenterName !== room.ownerName);
+  const currentViewerIsSeparateParticipant = role === 'viewer' && !isCurrentPresenter;
+  const unlistedViewerCount = Math.max(0, Number(room?.viewerCount || 0)
+    - Number(presenterIsSeparateParticipant) - Number(currentViewerIsSeparateParticipant));
 
   if (role === 'viewer' && !joined && !roomClosed && !reconnecting) {
     return (
@@ -417,8 +499,8 @@ export default function StreamRoom({
             <p className="rooms-eyebrow">{isRoomOwner ? 'SUA SALA' : 'SALA DE TRANSMISSÃO'}</p>
             <h1>{room?.name || initialRoom?.name || 'Sala Astralis'}</h1>
           </div>
-          <span className={`stream-live-pill${localStream || room?.isLive ? ' is-live' : ''}`}>
-            <span />{localStream || room?.isLive ? 'AO VIVO' : 'AGUARDANDO TRANSMISSÃO'}
+          <span className={`stream-live-pill${localStream || room?.isLive || hasActiveYoutubeSource ? ' is-live' : ''}`}>
+            <span />{localStream || room?.isLive ? 'AO VIVO' : hasActiveYoutubeSource ? 'VÍDEO DO YOUTUBE' : 'AGUARDANDO TRANSMISSÃO'}
           </span>
         </div>
         <div className="stream-room-actions">
@@ -430,48 +512,117 @@ export default function StreamRoom({
         </div>
       </header>
 
-      <section ref={stageRef} className={`stream-stage${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`} aria-label="Tela transmitida">
-        {localStream ? <video ref={localVideoRef} autoPlay muted playsInline /> : remoteStream ? (
-          <>
-            <video ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />
-            {playbackNeedsGesture && <button type="button" className="stream-player-start" onClick={iniciarVideo}>Iniciar vídeo</button>}
-            <div className="stream-player-controls" role="group" aria-label="Controles da transmissão">
-              {volumeSupported === true && <input type="range" className="stream-player-volume" min="0" max="100" value={Math.round(volume * 100)} onChange={ajustarVolume} aria-label="Volume da transmissão" />}
-              <button type="button" className="stream-player-button" aria-label="Silenciar áudio" aria-pressed={remoteAudioMuted} title={remoteAudioMuted ? 'Ativar áudio' : 'Silenciar áudio'} onClick={alternarAudio}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d={remoteAudioMuted || volume === 0 ? 'M17 9l5 6m0-6-5 6' : 'M16 9a4 4 0 0 1 0 6m2-9a8 8 0 0 1 0 12'} /></svg>
-              </button>
-              <button type="button" className="stream-player-button" aria-label="Picture-in-picture" title="Janela flutuante" onClick={alternarJanelaFlutuante}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h7v5h-7z" /></svg>
-              </button>
-              <button type="button" className="stream-player-button" aria-label="Tela cheia" title="Tela cheia" onClick={alternarTelaCheia}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" /></svg>
-              </button>
-              <button type="button" className="stream-player-button stream-player-button--exit" aria-label="Parar de assistir" title="Parar de assistir" onClick={sair}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10 5.3a10.6 10.6 0 0 1 11 6.7 10.8 10.8 0 0 1-3.1 4.2M6.2 6.3A11 11 0 0 0 3 12c2.2 4.1 5.2 6 9 6 1.1 0 2.1-.2 3-.5" /><path d="M9.8 9.8a3.1 3.1 0 0 0 4.4 4.4" /></svg>
-              </button>
+      <div className="stream-room-workspace">
+        <section ref={stageRef} className={`stream-stage${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`} aria-label="Tela transmitida">
+          {localStream ? <video ref={localVideoRef} autoPlay muted playsInline /> : remoteStream ? (
+            <>
+              <video ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />
+              {playbackNeedsGesture && <button type="button" className="stream-player-start" onClick={iniciarVideo}>Iniciar vídeo</button>}
+              <div className="stream-player-controls" role="group" aria-label="Controles da transmissão">
+                {volumeSupported === true && <input type="range" className="stream-player-volume" min="0" max="100" value={Math.round(volume * 100)} onChange={ajustarVolume} aria-label="Volume da transmissão" />}
+                <button type="button" className="stream-player-button" aria-label="Silenciar áudio" aria-pressed={remoteAudioMuted} title={remoteAudioMuted ? 'Ativar áudio' : 'Silenciar áudio'} onClick={alternarAudio}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d={remoteAudioMuted || volume === 0 ? 'M17 9l5 6m0-6-5 6' : 'M16 9a4 4 0 0 1 0 6m2-9a8 8 0 0 1 0 12'} /></svg>
+                </button>
+                <button type="button" className="stream-player-button" aria-label="Picture-in-picture" title="Janela flutuante" onClick={alternarJanelaFlutuante}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h7v5h-7z" /></svg>
+                </button>
+                <button type="button" className="stream-player-button" aria-label="Tela cheia" title="Tela cheia" onClick={alternarTelaCheia}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" /></svg>
+                </button>
+                <button type="button" className="stream-player-button stream-player-button--exit" aria-label="Parar de assistir" title="Parar de assistir" onClick={sair}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10 5.3a10.6 10.6 0 0 1 11 6.7 10.8 10.8 0 0 1-3.1 4.2M6.2 6.3A11 11 0 0 0 3 12c2.2 4.1 5.2 6 9 6 1.1 0 2.1-.2 3-.5" /><path d="M9.8 9.8a3.1 3.1 0 0 0 4.4 4.4" /></svg>
+                </button>
+              </div>
+            </>
+          ) : youtubeSource?.videoId ? (
+            <YouTubeRoomPlayer
+              videoId={youtubeSource.videoId}
+              playback={youtubePlayback}
+              onPlaybackCommand={enviarComandoYouTube}
+            />
+          ) : (
+            <div className="stream-stage-empty" role="status" aria-live="polite">
+              {room?.isLive
+                ? <div className="stream-stage-empty__spinner" aria-hidden="true" />
+                : <div className="stream-stage-empty__icon" aria-hidden="true">◉</div>}
+              <h2>{room?.isLive ? 'Conectando à transmissão…' : 'Ninguém está transmitindo ainda'}</h2>
+              <p>{room?.isLive
+                ? `Transmitido por ${room?.presenterName || room?.ownerName || 'um participante da sala'}.`
+                : 'Seja a primeira pessoa a compartilhar sua tela com a sala.'}</p>
+              {!room?.isLive && <div className="stream-stage-empty__actions">
+                <button type="button" className="rooms-primary-button" disabled={reconnecting} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : 'Compartilhar tela'}</button>
+                {isRoomOwner && <button type="button" className="rooms-secondary-button" onClick={abrirFonteYouTube}>Adicionar fonte de vídeo</button>}
+              </div>}
             </div>
-          </>
-        ) : (
-          <div className="stream-stage-empty" role="status" aria-live="polite">
-            {room?.isLive
-              ? <div className="stream-stage-empty__spinner" aria-hidden="true" />
-              : <div className="stream-stage-empty__icon" aria-hidden="true">◉</div>}
-            <h2>{room?.isLive ? 'Conectando à transmissão…' : 'Pronto para compartilhar?'}</h2>
-            <p>{room?.isLive
-              ? `Transmitido por ${room?.presenterName || room?.ownerName || 'um participante da sala'}.`
-              : 'Qualquer pessoa na sala pode iniciar uma transmissão de tela. A conversa continua no Discord.'}</p>
-            {!room?.isLive && <button type="button" className="rooms-primary-button" disabled={reconnecting} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : 'Escolher tela'}</button>}
-          </div>
-        )}
-      </section>
+          )}
+          {youtubeSource?.videoId && isRoomOwner && <button type="button" className="stream-source-remove" onClick={removerFonteYouTube}>Remover vídeo da sala</button>}
+        </section>
 
-      <footer className="stream-room-footer">
-        <span>{isRoomOwner ? 'Você é o anfitrião' : room?.presenterName ? `Transmitindo: ${room.presenterName}` : 'Você está na sala'}</span>
-        <span>{room?.viewerCount || 0} {room?.viewerCount === 1 ? 'espectador' : 'espectadores'}</span>
-        <span className="stream-room-discord-note">Sem voz ou chat · continuem pelo Discord</span>
-      </footer>
+        <aside className="stream-room-participants" aria-label="Participantes da sala">
+          <header className="stream-room-participants__header">
+            <h2>Participantes</h2>
+            <span>{Math.max(1, Number(room?.viewerCount || 0) + 1)}</span>
+          </header>
+          <ul className="stream-room-participants__list">
+            <li>
+              <span className="stream-room-participants__avatar" aria-hidden="true">{(room?.ownerName || 'A').trim().slice(0, 1).toUpperCase()}</span>
+              <span className="stream-room-participants__identity"><strong>{room?.ownerName || (isRoomOwner ? 'Você' : 'Anfitrião')}</strong><small>Anfitrião</small></span>
+              <span className="stream-room-participants__online" aria-label="online" />
+            </li>
+            {presenterIsSeparateParticipant && <li>
+              <span className="stream-room-participants__avatar stream-room-participants__avatar--live" aria-hidden="true">{room.presenterName.trim().slice(0, 1).toUpperCase()}</span>
+              <span className="stream-room-participants__identity"><strong>{room.presenterName}</strong><small>Transmitindo agora</small></span>
+              <span className="stream-room-participants__online stream-room-participants__online--live" aria-label="transmitindo" />
+            </li>}
+            {currentViewerIsSeparateParticipant && <li>
+              <span className="stream-room-participants__avatar stream-room-participants__avatar--quiet" aria-hidden="true">V</span>
+              <span className="stream-room-participants__identity"><strong>Você</strong><small>Na sala</small></span>
+              <span className="stream-room-participants__online" aria-label="online" />
+            </li>}
+            {unlistedViewerCount > 0 && <li className="stream-room-participants__summary">
+              <span className="stream-room-participants__avatar stream-room-participants__avatar--quiet" aria-hidden="true">+</span>
+              <span className="stream-room-participants__identity"><strong>Mais {unlistedViewerCount} {unlistedViewerCount === 1 ? 'espectador' : 'espectadores'}</strong><small>na sala</small></span>
+            </li>}
+          </ul>
+          <p className="stream-room-participants__note">Compartilhamento de tela e vídeo do YouTube. Para conversar, usem o Discord.</p>
+        </aside>
+      </div>
+
+      <StreamRoomActionBar
+        isSharing={Boolean(localStream || isCurrentPresenter)}
+        hasYouTubeSource={hasActiveYoutubeSource}
+        canManageSource={isRoomOwner}
+        shareDisabled={occupiedByAnother || hasActiveYoutubeSource}
+        sourceDisabled={Boolean(room?.isLive)}
+        disabled={reconnecting}
+        onShare={onRequestShare}
+        onStopShare={pararTransmissao}
+        onAddYouTube={abrirFonteYouTube}
+        onSettings={onOpenSettings}
+        onFullscreen={alternarTelaCheia}
+        onExit={sair}
+        exitLabel={isRoomOwner ? 'Encerrar sala' : 'Parar de assistir'}
+      />
+      {youtubeDialogOpen && <div className="stream-youtube-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setYoutubeDialogOpen(false); }}>
+        <section className="stream-youtube-dialog" role="dialog" aria-modal="true" aria-labelledby="stream-youtube-title">
+          <button type="button" className="stream-youtube-dialog__close" aria-label="Fechar" onClick={() => setYoutubeDialogOpen(false)}>×</button>
+          <p className="rooms-eyebrow">FONTE COMPARTILHADA</p>
+          <h2 id="stream-youtube-title">Adicionar vídeo do YouTube</h2>
+          <p>Cada pessoa assiste ao vídeo diretamente do YouTube; os controles ficam sincronizados. Vamos iniciar ao adicionar, mas o celular pode exigir um toque.</p>
+          <form onSubmit={salvarFonteYouTube}>
+            <label htmlFor="stream-youtube-url">Link do vídeo</label>
+            <input id="stream-youtube-url" type="text" inputMode="url" value={youtubeUrl} onChange={(event) => setYoutubeUrl(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" autoComplete="url" required />
+            {error && <p className="rooms-error" role="alert">{error}</p>}
+            <div className="stream-youtube-dialog__actions">
+              {youtubeSource && <button type="button" className="rooms-danger-button" onClick={removerFonteYouTube}>Remover vídeo</button>}
+              <button type="button" className="rooms-secondary-button" onClick={() => setYoutubeDialogOpen(false)}>Cancelar</button>
+              <button type="submit" className="rooms-primary-button">{youtubeSource ? 'Trocar vídeo' : 'Adicionar vídeo'}</button>
+            </div>
+          </form>
+        </section>
+      </div>}
       {reconnecting && <p className="rooms-toast" role="status">Reconectando à sala e restaurando a transmissão…</p>}
-      {error && <p className="rooms-toast" role="alert">{error}</p>}
+      {error && !youtubeDialogOpen && <p className="rooms-toast" role="alert">{error}</p>}
     </main>
   );
 }

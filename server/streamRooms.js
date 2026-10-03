@@ -25,6 +25,13 @@ function criarResumoSala(sala) {
   };
 }
 
+function copiarEstadoYoutube(sala) {
+  return {
+    source: sala.youtubeSource ? { ...sala.youtubeSource } : null,
+    playback: { ...sala.youtubePlayback },
+  };
+}
+
 function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo } = {}) {
   const salas = new Map();
   const salasPorSocket = new Map();
@@ -61,6 +68,7 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
   }
 
   function resultadoDeEntrada(sala, socketId, role) {
+    const youtubeState = copiarEstadoYoutube(sala);
     const peerSocketIds = sala.presenterSocketId
       ? (sala.presenterSocketId === socketId
         ? socketsDaSala(sala, socketId)
@@ -76,6 +84,8 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       peerSocketIds,
       presenterSocketId: sala.presenterSocketId,
       presenterName: sala.presenterName,
+      youtubeSource: youtubeState.source,
+      youtubePlayback: youtubeState.playback,
       ...(role === 'host' && sala.accessCode ? { accessCode: sala.accessCode } : {}),
     };
   }
@@ -94,6 +104,7 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
 
     const id = makeId();
     if (!id || salas.has(id)) return { ok: false, error: 'Não foi possível criar um identificador de sala.' };
+    const createdAt = new Date().toISOString();
     const sala = {
       id,
       name: nome,
@@ -105,11 +116,19 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       isLive: false,
       presenterSocketId: null,
       presenterName: null,
+      youtubeSource: null,
+      youtubePlayback: {
+        action: 'pause',
+        currentTime: 0,
+        updatedAt: createdAt,
+        revision: 0,
+      },
       viewers: new Map(),
-      createdAt: new Date().toISOString(),
+      createdAt,
     };
     salas.set(id, sala);
     salasPorSocket.set(ownerSocketId, { roomId: id, role: 'host' });
+    const youtubeState = copiarEstadoYoutube(sala);
     return {
       ok: true,
       room: criarResumoSala(sala),
@@ -117,6 +136,8 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       peerSocketIds: [],
       presenterSocketId: null,
       presenterName: null,
+      youtubeSource: youtubeState.source,
+      youtubePlayback: youtubeState.playback,
       ...(sala.accessCode ? { accessCode: sala.accessCode } : {}),
     };
   }
@@ -159,10 +180,16 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
     if (!membership || membership.roomId !== roomId) {
       return { ok: false, error: 'Entre na sala antes de controlar a transmissão.' };
     }
+    if (typeof isLive !== 'boolean') {
+      return { ok: false, error: 'O estado da transmissão é inválido.' };
+    }
+    if (isLive && sala.youtubeSource) {
+      return { ok: false, error: 'Remova a fonte do YouTube antes de iniciar uma transmissão de tela.' };
+    }
 
     let previousPresenterSocketId = null;
     let previousPresenterName = null;
-    if (Boolean(isLive)) {
+    if (isLive) {
       if (sala.presenterSocketId && sala.presenterSocketId !== socketId) {
         return {
           ok: false,
@@ -199,6 +226,64 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       previousPresenterSocketId,
       previousPresenterName,
     };
+  }
+
+  function setYoutubeSource(roomId, socketId, videoId) {
+    const sala = salas.get(roomId);
+    if (!sala) return { ok: false, error: 'Esta sala não está mais ativa.' };
+    if (sala.ownerSocketId !== socketId || salasPorSocket.get(socketId)?.roomId !== roomId
+      || salasPorSocket.get(socketId)?.role !== 'host') {
+      return { ok: false, error: 'Somente o anfitrião pode alterar a fonte do YouTube.' };
+    }
+    if (videoId !== null && sala.isLive) {
+      return { ok: false, error: 'Pare a transmissão de tela antes de adicionar uma fonte do YouTube.' };
+    }
+    if (videoId !== null && (typeof videoId !== 'string' || !/^[A-Za-z0-9_-]{11}$/.test(videoId))) {
+      return { ok: false, error: 'O identificador do vídeo do YouTube é inválido.' };
+    }
+
+    sala.youtubeSource = videoId === null ? null : { videoId };
+    sala.youtubePlayback = {
+      action: videoId === null ? 'pause' : 'play',
+      currentTime: 0,
+      updatedAt: new Date().toISOString(),
+      revision: sala.youtubePlayback.revision + 1,
+    };
+    const state = copiarEstadoYoutube(sala);
+    return { ok: true, ...state };
+  }
+
+  function setYoutubePlayback(roomId, socketId, { action, currentTime } = {}) {
+    const sala = salas.get(roomId);
+    if (!sala) return { ok: false, error: 'Esta sala não está mais ativa.' };
+    const membership = salasPorSocket.get(socketId);
+    if (!membership || membership.roomId !== roomId) {
+      return { ok: false, error: 'Entre na sala antes de controlar o vídeo.' };
+    }
+    if (!sala.youtubeSource) return { ok: false, error: 'Não há uma fonte do YouTube nesta sala.' };
+    if (!['play', 'pause', 'seek'].includes(action)) {
+      return { ok: false, error: 'Ação de reprodução inválida.' };
+    }
+    if (action === 'seek' && currentTime === undefined) {
+      return { ok: false, error: 'Informe a posição do vídeo.' };
+    }
+    const position = currentTime === undefined ? sala.youtubePlayback.currentTime : currentTime;
+    if (typeof position !== 'number' || !Number.isFinite(position) || position < 0 || position > 86400) {
+      return { ok: false, error: 'A posição do vídeo deve estar entre 0 e 86400 segundos.' };
+    }
+
+    sala.youtubePlayback = {
+      // `action` in persisted state represents the play/pause mode. A seek is
+      // a position update, so late joiners still know whether to start playing.
+      action: action === 'seek'
+        ? sala.youtubePlayback.action === 'pause' ? 'pause' : 'play'
+        : action,
+      currentTime: position,
+      updatedAt: new Date().toISOString(),
+      revision: sala.youtubePlayback.revision + 1,
+    };
+    const state = copiarEstadoYoutube(sala);
+    return { ok: true, ...state };
   }
 
   function endRoom(roomId, socketId) {
@@ -292,6 +377,8 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
     getRoom,
     getSocketRole,
     getPresenterSocketId,
+    setYoutubeSource,
+    setYoutubePlayback,
     canSignal,
     listPublicRooms: () => Array.from(salas.values())
       .filter((sala) => sala.visibility === 'public' && sala.isLive)
@@ -547,6 +634,11 @@ function registrarEventosSala({ socket, io, manager }) {
       }
       concluirEntrada(tentativa);
       reply(callback, resultadoAtualizado);
+      socket.emit('sala:youtube:estado', {
+        salaId: roomId,
+        source: resultadoAtualizado.youtubeSource,
+        playback: resultadoAtualizado.youtubePlayback,
+      });
       if (resultadoAtualizado.role === 'viewer' && !roleBeforeJoin) {
         const presenterOrHost = resultadoAtualizado.presenterSocketId || resultadoAtualizado.hostSocketId;
         io.to(presenterOrHost).emit('sala:espectador-entrou', { salaId: roomId, socketId: socket.id });
@@ -597,6 +689,52 @@ function registrarEventosSala({ socket, io, manager }) {
     });
     io.to(nomeSalaSocket(dados.roomId)).emit('sala:estado', { sala: result.room });
     publicarSalas();
+    reply(callback, result);
+  });
+
+  socket.on('sala:youtube:fonte', (dados, callback) => {
+    dados = objetoOuVazio(dados);
+    const roomId = dados.roomId;
+    if (!roomId || entradaPendente?.roomId === roomId
+      || !manager.getSocketRole(socket.id, roomId)
+      || !pertenceASala(socket.id, roomId)) {
+      reply(callback, { ok: false, error: 'Entre na sala antes de alterar a fonte do YouTube.' });
+      return;
+    }
+    const result = manager.setYoutubeSource(roomId, socket.id, dados.videoId);
+    if (!result.ok) {
+      reply(callback, result);
+      return;
+    }
+    io.to(nomeSalaSocket(roomId)).emit('sala:youtube:estado', {
+      salaId: roomId,
+      source: result.source,
+      playback: result.playback,
+    });
+    reply(callback, result);
+  });
+
+  socket.on('sala:youtube:reproducao', (dados, callback) => {
+    dados = objetoOuVazio(dados);
+    const roomId = dados.roomId;
+    if (!roomId || entradaPendente?.roomId === roomId
+      || !manager.getSocketRole(socket.id, roomId)
+      || !pertenceASala(socket.id, roomId)) {
+      reply(callback, { ok: false, error: 'Entre na sala antes de controlar o vídeo.' });
+      return;
+    }
+    const result = manager.setYoutubePlayback(roomId, socket.id, {
+      action: dados.action,
+      currentTime: dados.currentTime,
+    });
+    if (!result.ok) {
+      reply(callback, result);
+      return;
+    }
+    io.to(nomeSalaSocket(roomId)).emit('sala:youtube:reproducao', {
+      salaId: roomId,
+      playback: result.playback,
+    });
     reply(callback, result);
   });
 

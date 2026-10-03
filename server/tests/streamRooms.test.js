@@ -24,6 +24,7 @@ function criarSala(manager, options = {}) {
 function socketDeTeste(id, usuario = null, espectadorAnonimo = false, join = null) {
   const handlers = new Map();
   const salasSocket = new Set();
+  const recebidos = [];
   return {
     id,
     usuario,
@@ -31,10 +32,11 @@ function socketDeTeste(id, usuario = null, espectadorAnonimo = false, join = nul
     handlers,
     salasSocket,
     rooms: salasSocket,
+    recebidos,
     on: (evento, handler) => handlers.set(evento, handler),
     join: (room) => join ? join(room, salasSocket) : salasSocket.add(room),
     leave: (room) => salasSocket.delete(room),
-    emit: () => {},
+    emit: (evento, dados) => recebidos.push({ evento, dados }),
   };
 }
 
@@ -220,6 +222,18 @@ test('screen room: só um presenter ativo por sala e somente ele pode parar sua 
   assert.equal(hostStop.ok, false);
   assert.equal(manager.getRoom(created.room.id).isLive, true);
   assert.equal(manager.setLive(created.room.id, 'presenter-one', false).ok, true);
+  assert.equal(manager.getRoom(created.room.id).isLive, false);
+});
+
+test('screen room: rejeita estado de transmissão que não seja booleano', () => {
+  const manager = managerDeTeste();
+  const created = criarSala(manager);
+
+  const malformedStart = manager.setLive(created.room.id, 'host-socket', 'true');
+  const malformedStop = manager.setLive(created.room.id, 'host-socket', 'false');
+
+  assert.equal(malformedStart.ok, false);
+  assert.equal(malformedStop.ok, false);
   assert.equal(manager.getRoom(created.room.id).isLive, false);
 });
 
@@ -739,6 +753,215 @@ test('screen room socket: encerramento limpa associação restante mesmo se leav
   await acionar(host, 'salas:encerrar', { roomId: created.room.id });
 
   assert.equal(viewer.salasSocket.has(`sala-${created.room.id}`), false);
+});
+
+test('YouTube por sala: anfitrião altera a fonte e a troca reinicia playback com revisão crescente', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const member = socketDeTeste('member-socket', null, true);
+  registrarSocket(host, io, manager);
+  registrarSocket(member, io, manager);
+  const created = await acionar(host, 'salas:criar', { name: 'Vídeo', visibility: 'public' });
+  await acionar(member, 'salas:entrar', { roomId: created.room.id });
+  const roomChannel = `sala-${created.room.id}`;
+  io.enviados.length = 0;
+
+  const sourceSet = await acionar(host, 'sala:youtube:fonte', {
+    roomId: created.room.id, videoId: 'dQw4w9WgXcQ',
+  });
+  assert.equal(sourceSet.ok, true);
+  assert.deepEqual(sourceSet.source, { videoId: 'dQw4w9WgXcQ' });
+  assert.deepEqual(sourceSet.playback, {
+    action: 'play', currentTime: 0, updatedAt: sourceSet.playback.updatedAt, revision: 1,
+  });
+  assert.ok(Number.isFinite(Date.parse(sourceSet.playback.updatedAt)));
+  const sourceBroadcast = io.enviados.find((item) => item.destino === roomChannel
+    && item.evento === 'sala:youtube:estado');
+  assert.deepEqual(sourceBroadcast.dados, {
+    salaId: created.room.id,
+    source: sourceSet.source,
+    playback: sourceSet.playback,
+  });
+
+  const seek = await acionar(member, 'sala:youtube:reproducao', {
+    roomId: created.room.id, action: 'seek', currentTime: 95.5,
+  });
+  assert.equal(seek.ok, true);
+  assert.deepEqual(seek.playback, {
+    action: 'play', currentTime: 95.5, updatedAt: seek.playback.updatedAt, revision: 2,
+  });
+  const playbackBroadcast = io.enviados.find((item) => item.destino === roomChannel
+    && item.evento === 'sala:youtube:reproducao');
+  assert.deepEqual(playbackBroadcast.dados, {
+    salaId: created.room.id,
+    playback: seek.playback,
+  });
+
+  const sourceReplaced = await acionar(host, 'sala:youtube:fonte', {
+    roomId: created.room.id, videoId: 'M7lc1UVf-VE',
+  });
+  assert.equal(sourceReplaced.ok, true);
+  assert.deepEqual(sourceReplaced.source, { videoId: 'M7lc1UVf-VE' });
+  assert.equal(sourceReplaced.playback.action, 'play');
+  assert.equal(sourceReplaced.playback.currentTime, 0);
+  assert.equal(sourceReplaced.playback.revision, 3);
+
+  const sourceCleared = await acionar(host, 'sala:youtube:fonte', {
+    roomId: created.room.id, videoId: null,
+  });
+  assert.equal(sourceCleared.ok, true);
+  assert.equal(sourceCleared.source, null);
+  assert.equal(sourceCleared.playback.revision, 4);
+  assert.ok(io.enviados.some((item) => item.destino === roomChannel
+    && item.evento === 'sala:youtube:estado'
+    && item.dados.source === null
+    && item.dados.playback.revision === 4));
+});
+
+test('YouTube por sala: apenas anfitrião define fonte e videoId aceita exatamente onze caracteres válidos', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const member = socketDeTeste('member-socket', null, true);
+  registrarSocket(host, io, manager);
+  registrarSocket(member, io, manager);
+  const created = await acionar(host, 'salas:criar', { name: 'Vídeo', visibility: 'private' });
+  await acionar(member, 'salas:entrar', { accessCode: created.accessCode });
+  io.enviados.length = 0;
+
+  const denied = await acionar(member, 'sala:youtube:fonte', {
+    roomId: created.room.id, videoId: 'dQw4w9WgXcQ',
+  });
+  assert.equal(denied.ok, false);
+  assert.equal(io.enviados.some((item) => item.evento === 'sala:youtube:estado'), false);
+
+  for (const videoId of ['short', 'dQw4w9WgXcQx', 'dQw4w9WgXc!', '', 42]) {
+    const invalid = await acionar(host, 'sala:youtube:fonte', { roomId: created.room.id, videoId });
+    assert.equal(invalid.ok, false, `videoId inválido aceito: ${String(videoId)}`);
+  }
+  const valid = await acionar(host, 'sala:youtube:fonte', {
+    roomId: created.room.id, videoId: 'aB_2-345678',
+  });
+  assert.equal(valid.ok, true);
+  assert.equal(valid.source.videoId, 'aB_2-345678');
+});
+
+test('YouTube e compartilhamento de tela não ocupam o palco ao mesmo tempo', () => {
+  const manager = managerDeTeste();
+  const created = criarSala(manager);
+
+  assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', 'dQw4w9WgXcQ').ok, true);
+  assert.equal(manager.setLive(created.room.id, 'host-socket', true).ok, false);
+  assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', null).ok, true);
+  assert.equal(manager.setLive(created.room.id, 'host-socket', true).ok, true);
+  assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', 'dQw4w9WgXcQ').ok, false);
+});
+
+test('YouTube por sala: membros controlam playback com ações e tempos limitados', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const member = socketDeTeste('member-socket', null, true);
+  registrarSocket(host, io, manager);
+  registrarSocket(member, io, manager);
+  const created = await acionar(host, 'salas:criar', { name: 'Vídeo', visibility: 'public' });
+  await acionar(member, 'salas:entrar', { roomId: created.room.id });
+  await acionar(host, 'sala:youtube:fonte', { roomId: created.room.id, videoId: 'dQw4w9WgXcQ' });
+
+  const play = await acionar(member, 'sala:youtube:reproducao', { roomId: created.room.id, action: 'play' });
+  assert.equal(play.ok, true);
+  assert.equal(play.playback.action, 'play');
+  assert.equal(play.playback.currentTime, 0);
+  const pause = await acionar(host, 'sala:youtube:reproducao', {
+    roomId: created.room.id, action: 'pause', currentTime: 12,
+  });
+  assert.equal(pause.ok, true);
+  assert.equal(pause.playback.currentTime, 12);
+
+  for (const invalid of [
+    { action: 'stop', currentTime: 0 },
+    { action: 'seek', currentTime: -0.01 },
+    { action: 'seek', currentTime: 86400.01 },
+    { action: 'seek', currentTime: Number.NaN },
+    { action: 'seek', currentTime: Number.POSITIVE_INFINITY },
+    { action: 'play', currentTime: Number.NaN },
+  ]) {
+    const result = await acionar(member, 'sala:youtube:reproducao', { roomId: created.room.id, ...invalid });
+    assert.equal(result.ok, false, `reprodução inválida aceita: ${JSON.stringify(invalid)}`);
+  }
+
+  const maximumSeek = await acionar(member, 'sala:youtube:reproducao', {
+    roomId: created.room.id, action: 'seek', currentTime: 86400,
+  });
+  assert.equal(maximumSeek.ok, true);
+  assert.equal(maximumSeek.playback.currentTime, 86400);
+  assert.equal(maximumSeek.playback.action, 'pause', 'seeking while paused preserves the paused state');
+  assert.equal(maximumSeek.playback.revision, 4);
+});
+
+test('YouTube por sala: rejeita sockets fora do canal e não mistura estado entre salas privadas', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const hostA = socketDeTeste('host-a', { id: 1, nome: 'A' });
+  const hostB = socketDeTeste('host-b', { id: 2, nome: 'B' });
+  const outsider = socketDeTeste('outsider', null, true);
+  [hostA, hostB, outsider].forEach((socket) => registrarSocket(socket, io, manager));
+  const roomA = await acionar(hostA, 'salas:criar', { name: 'Privada A', visibility: 'private' });
+  const roomB = await acionar(hostB, 'salas:criar', { name: 'Privada B', visibility: 'private' });
+  await acionar(outsider, 'salas:entrar', { accessCode: roomB.accessCode });
+  io.enviados.length = 0;
+
+  const crossRoom = await acionar(outsider, 'sala:youtube:fonte', {
+    roomId: roomA.room.id, videoId: 'dQw4w9WgXcQ',
+  });
+  assert.equal(crossRoom.ok, false);
+  assert.equal(io.enviados.some((item) => item.destino === `sala-${roomA.room.id}`), false);
+  assert.equal(io.enviados.some((item) => item.destino === `sala-${roomB.room.id}`), false);
+
+  const orphanedMembership = socketDeTeste('orphaned', null, true);
+  registrarSocket(orphanedMembership, io, manager);
+  await acionar(orphanedMembership, 'salas:entrar', { accessCode: roomA.accessCode });
+  orphanedMembership.recebidos.length = 0;
+  io.enviados.length = 0;
+  orphanedMembership.salasSocket.delete(`sala-${roomA.room.id}`);
+  const staleSocket = await acionar(orphanedMembership, 'sala:youtube:reproducao', {
+    roomId: roomA.room.id, action: 'play',
+  });
+  assert.equal(staleSocket.ok, false);
+  assert.equal(orphanedMembership.recebidos.some((item) => item.evento === 'sala:youtube:estado'), false);
+  assert.equal(io.enviados.some((item) => item.evento === 'sala:youtube:reproducao'), false);
+});
+
+test('YouTube por sala: entrada recebe a fonte e playback atuais somente após entrar no canal', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  registrarSocket(host, io, manager);
+  const created = await acionar(host, 'salas:criar', { name: 'Privada', visibility: 'private' });
+  await acionar(host, 'sala:youtube:fonte', { roomId: created.room.id, videoId: 'dQw4w9WgXcQ' });
+  await acionar(host, 'sala:youtube:reproducao', {
+    roomId: created.room.id, action: 'seek', currentTime: 321,
+  });
+
+  const viewer = socketDeTeste('viewer-socket', null, true);
+  registrarSocket(viewer, io, manager);
+  const joined = await acionar(viewer, 'salas:entrar', { accessCode: created.accessCode });
+
+  assert.equal(joined.ok, true);
+  assert.equal(joined.youtubeSource.videoId, 'dQw4w9WgXcQ');
+  assert.deepEqual(joined.youtubePlayback, {
+    action: 'play', currentTime: 321,
+    updatedAt: joined.youtubePlayback.updatedAt, revision: 2,
+  });
+  assert.ok(viewer.recebidos.some((item) => item.evento === 'sala:youtube:estado'
+    && item.dados.salaId === created.room.id
+    && item.dados.source.videoId === 'dQw4w9WgXcQ'
+    && item.dados.playback.revision === 2));
+
+  const unjoined = socketDeTeste('unjoined', null, true);
+  registrarSocket(unjoined, io, manager);
+  assert.equal(unjoined.recebidos.some((item) => item.evento === 'sala:youtube:estado'), false);
 });
 
 test('screen room socket: não retransmite sinal para socket desconectado com associação residual', async () => {
