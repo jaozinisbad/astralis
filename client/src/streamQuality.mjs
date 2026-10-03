@@ -1,8 +1,8 @@
 export const DEFAULT_STREAM_QUALITY = Object.freeze({
-  resolution: '720p',
-  fps: 30,
-  bitrate: 4_000_000,
-  adaptiveQuality: true,
+  resolution: '1080p',
+  fps: 60,
+  bitrate: 16_000_000,
+  adaptiveQuality: false,
   contentType: 'detail',
   shareAudio: true,
   ignoreDiscordAudio: false,
@@ -11,7 +11,7 @@ export const DEFAULT_STREAM_QUALITY = Object.freeze({
 export const STREAM_QUALITY_OPTIONS = Object.freeze({
   resolutions: Object.freeze(['576p', '720p', '1080p']),
   fps: Object.freeze([15, 24, 30, 60]),
-  bitrates: Object.freeze([700_000, 2_000_000, 4_000_000, 8_000_000]),
+  bitrates: Object.freeze([700_000, 2_000_000, 4_000_000, 8_000_000, 16_000_000]),
 });
 
 const DIMENSIONS = Object.freeze({
@@ -20,9 +20,10 @@ const DIMENSIONS = Object.freeze({
   '1080p': Object.freeze({ width: 1920, height: 1080 }),
 });
 
-function settingsWithDefaults(settings = {}) {
-  const resolution = STREAM_QUALITY_OPTIONS.resolutions.includes(settings.resolution)
-    ? settings.resolution
+export function resolveStreamQuality(settings = {}) {
+  const requestedResolution = settings.resolution ?? settings.resolucao;
+  const resolution = STREAM_QUALITY_OPTIONS.resolutions.includes(requestedResolution)
+    ? requestedResolution
     : DEFAULT_STREAM_QUALITY.resolution;
   const fps = STREAM_QUALITY_OPTIONS.fps.includes(Number(settings.fps))
     ? Number(settings.fps)
@@ -38,12 +39,14 @@ function settingsWithDefaults(settings = {}) {
     fps,
     bitrate,
     contentType: settings.contentType === 'motion' ? 'motion' : 'detail',
-    adaptiveQuality: settings.adaptiveQuality !== false,
+    adaptiveQuality: settings.adaptiveQuality === undefined
+      ? DEFAULT_STREAM_QUALITY.adaptiveQuality
+      : Boolean(settings.adaptiveQuality),
   };
 }
 
 export function getCaptureConstraints(settings = {}) {
-  const resolved = settingsWithDefaults(settings);
+  const resolved = resolveStreamQuality(settings);
   const { width, height } = DIMENSIONS[resolved.resolution];
 
   return {
@@ -57,7 +60,7 @@ export function getCaptureConstraints(settings = {}) {
 }
 
 export function getVideoEncodingParameters(settings = {}, viewerCount = 1) {
-  const resolved = settingsWithDefaults(settings);
+  const resolved = resolveStreamQuality(settings);
   const viewers = Math.max(1, Math.floor(Number(viewerCount) || 1));
   const maxBitrate = resolved.adaptiveQuality
     ? Math.max(250_000, Math.floor(resolved.bitrate / viewers))

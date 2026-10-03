@@ -5,16 +5,22 @@ import {
   STREAM_QUALITY_OPTIONS,
   getCaptureConstraints,
   getVideoEncodingParameters,
+  resolveStreamQuality,
 } from '../src/streamQuality.mjs';
 
-test('stream quality: defaults stay within supported screen presets', () => {
-  assert.equal(DEFAULT_STREAM_QUALITY.resolution, '720p');
-  assert.equal(DEFAULT_STREAM_QUALITY.fps, 30);
-  assert.equal(DEFAULT_STREAM_QUALITY.bitrate, 4_000_000);
-  assert.equal(DEFAULT_STREAM_QUALITY.adaptiveQuality, true);
-  assert.deepEqual(STREAM_QUALITY_OPTIONS.resolutions, ['576p', '720p', '1080p']);
-  assert.deepEqual(STREAM_QUALITY_OPTIONS.fps, [15, 24, 30, 60]);
-  assert.deepEqual(STREAM_QUALITY_OPTIONS.bitrates, [700_000, 2_000_000, 4_000_000, 8_000_000]);
+test('stream quality: default capture requests full HD at 60 fps and permits 16 Mbps per viewer', () => {
+  const constraints = getCaptureConstraints();
+  const encoding = getVideoEncodingParameters({}, 3);
+
+  assert.deepEqual(constraints.video.width, { ideal: 1920, max: 1920 });
+  assert.deepEqual(constraints.video.height, { ideal: 1080, max: 1080 });
+  assert.deepEqual(constraints.video.frameRate, { ideal: 60, max: 60 });
+  assert.equal(encoding.maxBitrate, 16_000_000);
+  assert.ok(STREAM_QUALITY_OPTIONS.bitrates.includes(16_000_000));
+  assert.equal(DEFAULT_STREAM_QUALITY.resolution, '1080p');
+  assert.equal(DEFAULT_STREAM_QUALITY.fps, 60);
+  assert.equal(DEFAULT_STREAM_QUALITY.bitrate, 16_000_000);
+  assert.equal(DEFAULT_STREAM_QUALITY.adaptiveQuality, false);
 });
 
 test('stream quality: maps all supported resolutions and frame rates to capture constraints', () => {
@@ -34,6 +40,18 @@ test('stream quality: maps all supported resolutions and frame rates to capture 
   }
 });
 
+test('stream quality: resolves the legacy resolution key used by channel sharing', () => {
+  const quality = resolveStreamQuality({ resolucao: '720p', fps: 24, bitrate: 8_000_000 });
+  assert.equal(quality.resolution, '720p');
+  assert.equal(quality.fps, 24);
+  assert.equal(quality.bitrate, 8_000_000);
+  assert.deepEqual(getCaptureConstraints({ resolucao: '720p', fps: 24 }).video, {
+    width: { ideal: 1280, max: 1280 },
+    height: { ideal: 720, max: 720 },
+    frameRate: { ideal: 24, max: 24 },
+  });
+});
+
 test('stream quality: shares desktop audio only when enabled and Discord is not excluded', () => {
   assert.equal(getCaptureConstraints({ shareAudio: true }).audio, true);
   assert.equal(getCaptureConstraints({ shareAudio: false }).audio, false);
@@ -42,9 +60,9 @@ test('stream quality: shares desktop audio only when enabled and Discord is not 
 
 test('stream quality: invalid values fall back to safe defaults', () => {
   const constraints = getCaptureConstraints({ resolution: '8k', fps: 250, shareAudio: true });
-  assert.deepEqual(constraints.video.width, { ideal: 1280, max: 1280 });
-  assert.deepEqual(constraints.video.height, { ideal: 720, max: 720 });
-  assert.deepEqual(constraints.video.frameRate, { ideal: 30, max: 30 });
+  assert.deepEqual(constraints.video.width, { ideal: 1920, max: 1920 });
+  assert.deepEqual(constraints.video.height, { ideal: 1080, max: 1080 });
+  assert.deepEqual(constraints.video.frameRate, { ideal: 60, max: 60 });
 });
 
 test('stream quality: divides adaptive bitrate budget among active viewers', () => {
@@ -54,4 +72,5 @@ test('stream quality: divides adaptive bitrate budget among active viewers', () 
   const motion = getVideoEncodingParameters({ bitrate: 4_000_000, adaptiveQuality: false, contentType: 'motion' }, 4);
   assert.equal(motion.maxBitrate, 4_000_000);
   assert.equal(motion.degradationPreference, 'maintain-framerate');
+  assert.equal(getVideoEncodingParameters({ bitrate: 16_000_000, adaptiveQuality: true }, 4).maxBitrate, 4_000_000);
 });

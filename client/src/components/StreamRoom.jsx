@@ -13,6 +13,15 @@ function emitir(socket, evento, dados) {
   });
 }
 
+function salaComPresenter(resposta) {
+  if (!resposta?.room) return resposta?.room || null;
+  return {
+    ...resposta.room,
+    presenterSocketId: resposta.presenterSocketId ?? resposta.room.presenterSocketId ?? null,
+    presenterName: resposta.presenterName ?? resposta.room.presenterName ?? null,
+  };
+}
+
 export default function StreamRoom({
   socket,
   roomId,
@@ -27,20 +36,26 @@ export default function StreamRoom({
   onExit = () => {},
 }) {
   const [room, setRoom] = useState(initialRoom);
+  const peerRole = room?.presenterSocketId === socket?.id ? 'host' : 'viewer';
   const [remoteStream, setRemoteStream] = useState(null);
-  const [joined, setJoined] = useState(role === 'host' && joinedInitially);
+  const [joined, setJoined] = useState(Boolean(joinedInitially));
   const [joining, setJoining] = useState(role === 'viewer' && !joinedInitially);
   const [code, setCode] = useState(initialAccessCode);
   const [needsCode, setNeedsCode] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [roomClosed, setRoomClosed] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const [remoteAudioMuted, setRemoteAudioMuted] = useState(true);
   const [volume, setVolume] = useState(1);
   const [volumeSupported, setVolumeSupported] = useState(null);
   const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
   const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
   const peerSessionRef = useRef(null);
+  const presenterPeerIdsRef = useRef([]);
+  const requestedStreamRef = useRef(null);
+  const joinedRef = useRef(Boolean(joinedInitially));
+  const reconnectRequiredRef = useRef(false);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const stageRef = useRef(null);
@@ -51,29 +66,56 @@ export default function StreamRoom({
     const peerSession = createStreamRoomPeerSession({
       socket,
       roomId,
-      role,
+      role: peerRole,
       quality,
       onRemoteStream: (_peerId, stream) => setRemoteStream(stream),
+      onQualityError: () => setError('O navegador não aceitou o limite de bitrate. A transmissão continuará, mas pode ficar abaixo do perfil selecionado.'),
     });
     peerSessionRef.current = peerSession;
     peerSession.setLocalStream(localStream);
+    peerSession.setViewers(presenterPeerIdsRef.current);
 
     const onClosed = (message = {}) => {
       if (message.salaId === roomId) setRoomClosed(true);
     };
     const onRoomState = (message = {}) => {
-      if (message.sala?.id === roomId) setRoom(message.sala);
+      if (message.sala?.id !== roomId) return;
+      setRoom((current) => {
+        const sameLiveState = Boolean(current?.isLive) === Boolean(message.sala.isLive);
+        const hasPresenterId = Object.prototype.hasOwnProperty.call(message.sala, 'presenterSocketId');
+        const hasPresenterName = Object.prototype.hasOwnProperty.call(message.sala, 'presenterName');
+        return {
+          ...message.sala,
+          presenterSocketId: hasPresenterId ? message.sala.presenterSocketId : sameLiveState ? current?.presenterSocketId || null : null,
+          presenterName: hasPresenterName ? message.sala.presenterName : sameLiveState ? current?.presenterName || null : null,
+        };
+      });
+    };
+    const onTransmission = (message = {}) => {
+      if (message.salaId !== roomId) return;
+      setRoom((current) => current ? {
+        ...current,
+        isLive: Boolean(message.isLive),
+        presenterSocketId: message.presenterSocketId || null,
+        presenterName: message.presenterName || null,
+      } : current);
+      if (!message.isLive) {
+        presenterPeerIdsRef.current = [];
+        peerSessionRef.current?.resetPeers();
+      }
     };
     socket.on('sala:encerrada', onClosed);
     socket.on('sala:estado', onRoomState);
+    socket.on('sala:transmissao', onTransmission);
 
     return () => {
       socket.off('sala:encerrada', onClosed);
       socket.off('sala:estado', onRoomState);
+      socket.off('sala:transmissao', onTransmission);
       peerSession.close();
       peerSessionRef.current = null;
     };
-  }, [socket, roomId, role]);
+  }, [socket, roomId, peerRole]);
 
   useEffect(() => {
     if (role !== 'viewer' || joinedInitially) return;
@@ -81,6 +123,42 @@ export default function StreamRoom({
     setJoining(true);
     entrar(initialAccessCode);
   }, [socket, roomId, role, joinedInitially]);
+
+  useEffect(() => {
+    if (!socket || !roomId) return undefined;
+    const onDisconnect = () => {
+      if (!joinedRef.current) return;
+      reconnectRequiredRef.current = true;
+      joinedRef.current = false;
+      requestedStreamRef.current = null;
+      presenterPeerIdsRef.current = [];
+      peerSessionRef.current?.resetPeers();
+      setJoined(false);
+      setReconnecting(true);
+      setRoom((current) => current?.presenterSocketId === socket.id
+        ? { ...current, isLive: false, presenterSocketId: null, presenterName: null }
+        : current);
+    };
+    const onConnect = async () => {
+      if (!reconnectRequiredRef.current) return;
+      reconnectRequiredRef.current = false;
+      const rejoined = await entrar(initialAccessCode);
+      if (rejoined) {
+        setReconnecting(false);
+        setError('');
+        return;
+      }
+      setReconnecting(false);
+      setRoomClosed(true);
+      if (localStream) await onStopShare();
+    };
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect', onConnect);
+    return () => {
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect', onConnect);
+    };
+  }, [socket, roomId, initialAccessCode, localStream, onStopShare]);
 
   useEffect(() => {
     peerSessionRef.current?.setLocalStream(localStream);
@@ -145,14 +223,40 @@ export default function StreamRoom({
   }, [remoteStream]);
 
   useEffect(() => {
-    if (!socket || role !== 'host' || !joined || !roomId) return;
-    emitir(socket, 'salas:ao-vivo', { roomId, isLive: Boolean(localStream) }).then((resposta) => {
-      if (!resposta.ok) setError(resposta.error || 'Não foi possível atualizar a transmissão.');
+    if (!socket || !joined || !roomId || reconnecting || socket.connected === false) return;
+    if (localStream) {
+      if (requestedStreamRef.current === localStream || room?.presenterSocketId === socket.id) return;
+      requestedStreamRef.current = localStream;
+      emitir(socket, 'salas:ao-vivo', { roomId, isLive: true }).then((resposta) => {
+        if (!resposta.ok) {
+          requestedStreamRef.current = null;
+          setError(resposta.error || 'Não foi possível iniciar a transmissão.');
+          onStopShare();
+          return;
+        }
+        presenterPeerIdsRef.current = resposta.peerSocketIds || [];
+        setRoom(salaComPresenter(resposta));
+        peerSessionRef.current?.setViewers(presenterPeerIdsRef.current);
+      });
+      return;
+    }
+    if (!requestedStreamRef.current) return;
+    requestedStreamRef.current = null;
+    presenterPeerIdsRef.current = [];
+    emitir(socket, 'salas:ao-vivo', { roomId, isLive: false }).then((resposta) => {
+      if (resposta.ok) setRoom(salaComPresenter(resposta));
+      else if (!roomClosed) setError(resposta.error || 'Não foi possível encerrar a transmissão.');
     });
-  }, [socket, role, joined, roomId, localStream]);
+  }, [socket, joined, reconnecting, roomId, localStream, room?.presenterSocketId, onStopShare, roomClosed]);
+
+  useEffect(() => {
+    if (!socket || !joined || !roomId || reconnecting || !room?.isLive
+      || !room.presenterSocketId || peerRole !== 'viewer') return;
+    socket.emit('sala:espectador-pronto', { roomId });
+  }, [socket, joined, reconnecting, roomId, room?.isLive, room?.presenterSocketId, peerRole]);
 
   async function entrar(codigo = code) {
-    if (!socket) return;
+    if (!socket) return false;
     setJoining(true);
     setError('');
     const resposta = await emitir(socket, 'salas:entrar', { roomId, accessCode: codigo.trim() });
@@ -160,11 +264,14 @@ export default function StreamRoom({
     if (!resposta.ok) {
       setError(resposta.error || 'Não foi possível entrar nesta sala.');
       if (/código|privada/i.test(resposta.error || '')) setNeedsCode(true);
-      return;
+      return false;
     }
-    setRoom(resposta.room);
+    setRoom(salaComPresenter(resposta));
+    presenterPeerIdsRef.current = resposta.peerSocketIds || [];
+    joinedRef.current = true;
     setJoined(true);
     setNeedsCode(false);
+    return true;
   }
 
   async function copiarLink() {
@@ -181,13 +288,23 @@ export default function StreamRoom({
   }
 
   async function sair() {
+    if (localStream) await onStopShare();
     if (role === 'host') {
-      await onStopShare();
       await emitir(socket, 'salas:encerrar', { roomId });
     } else if (joined) {
       await emitir(socket, 'salas:sair', {});
     }
     onExit();
+  }
+
+  async function pararTransmissao() {
+    if (localStream) {
+      await onStopShare();
+      return;
+    }
+    const resposta = await emitir(socket, 'salas:ao-vivo', { roomId, isLive: false });
+    if (resposta.ok) setRoom(salaComPresenter(resposta));
+    else setError(resposta.error || 'Não foi possível encerrar a transmissão.');
   }
 
   function ajustarVolume(event) {
@@ -233,6 +350,15 @@ export default function StreamRoom({
         setPseudoFullscreen(false);
         return;
       }
+      const video = remoteVideoRef.current;
+      if (video?.webkitDisplayingFullscreen && typeof video.webkitExitFullscreen === 'function') {
+        video.webkitExitFullscreen();
+        return;
+      }
+      if (typeof video?.webkitEnterFullscreen === 'function') {
+        video.webkitEnterFullscreen();
+        return;
+      }
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (stageRef.current?.requestFullscreen) {
         try { await stageRef.current.requestFullscreen(); }
@@ -243,7 +369,11 @@ export default function StreamRoom({
     }
   }
 
-  if (role === 'viewer' && !joined && !roomClosed) {
+  const isRoomOwner = role === 'host';
+  const isCurrentPresenter = room?.presenterSocketId === socket?.id;
+  const occupiedByAnother = Boolean(room?.isLive && !isCurrentPresenter);
+
+  if (role === 'viewer' && !joined && !roomClosed && !reconnecting) {
     return (
       <main className="stream-room-gate">
         <button type="button" className="rooms-back-button" onClick={onExit}>← Salas</button>
@@ -284,7 +414,7 @@ export default function StreamRoom({
         <div className="stream-room-heading">
           <button type="button" className="rooms-back-button" onClick={sair}>← Salas</button>
           <div>
-            <p className="rooms-eyebrow">{role === 'host' ? 'SUA SALA' : 'ASSISTINDO AGORA'}</p>
+            <p className="rooms-eyebrow">{isRoomOwner ? 'SUA SALA' : 'SALA DE TRANSMISSÃO'}</p>
             <h1>{room?.name || initialRoom?.name || 'Sala Astralis'}</h1>
           </div>
           <span className={`stream-live-pill${localStream || room?.isLive ? ' is-live' : ''}`}>
@@ -292,25 +422,16 @@ export default function StreamRoom({
           </span>
         </div>
         <div className="stream-room-actions">
-          {role === 'host' && room?.visibility === 'private' && <span className="stream-room-code">Código: <strong>{initialAccessCode}</strong></span>}
-          {role === 'host' && <button type="button" className="rooms-secondary-button" onClick={copiarLink}>{copied ? 'Link copiado' : 'Copiar link'}</button>}
-          {role === 'host' && (localStream
-            ? <button type="button" className="rooms-danger-button" onClick={onStopShare}>Parar transmissão</button>
-            : <button type="button" className="rooms-primary-button" onClick={onRequestShare}>Compartilhar tela</button>)}
+          {isRoomOwner && room?.visibility === 'private' && <span className="stream-room-code">Código: <strong>{initialAccessCode}</strong></span>}
+          {isRoomOwner && <button type="button" className="rooms-secondary-button" onClick={copiarLink}>{copied ? 'Link copiado' : 'Copiar link'}</button>}
+          {localStream || isCurrentPresenter
+            ? <button type="button" className="rooms-danger-button" disabled={reconnecting} onClick={pararTransmissao}>Parar transmissão</button>
+            : <button type="button" className="rooms-primary-button" disabled={occupiedByAnother || reconnecting} title={occupiedByAnother ? 'A sala permite uma transmissão por vez.' : undefined} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : occupiedByAnother ? 'Outra pessoa está transmitindo' : 'Compartilhar tela'}</button>}
         </div>
       </header>
 
       <section ref={stageRef} className={`stream-stage${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`} aria-label="Tela transmitida">
-        {role === 'host' ? (
-          localStream ? <video ref={localVideoRef} autoPlay muted playsInline /> : (
-            <div className="stream-stage-empty">
-              <div className="stream-stage-empty__icon" aria-hidden="true">◉</div>
-              <h2>Pronto para compartilhar?</h2>
-              <p>A tela aparece aqui. O áudio e a conversa do Discord não entram na sala.</p>
-              <button type="button" className="rooms-primary-button" onClick={onRequestShare}>Escolher tela</button>
-            </div>
-          )
-        ) : remoteStream ? (
+        {localStream ? <video ref={localVideoRef} autoPlay muted playsInline /> : remoteStream ? (
           <>
             <video ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />
             {playbackNeedsGesture && <button type="button" className="stream-player-start" onClick={iniciarVideo}>Iniciar vídeo</button>}
@@ -332,18 +453,24 @@ export default function StreamRoom({
           </>
         ) : (
           <div className="stream-stage-empty" role="status" aria-live="polite">
-            <div className="stream-stage-empty__spinner" aria-hidden="true" />
-            <h2>Conectando à transmissão…</h2>
-            <p>Se demorar, confira se o anfitrião iniciou o compartilhamento.</p>
+            {room?.isLive
+              ? <div className="stream-stage-empty__spinner" aria-hidden="true" />
+              : <div className="stream-stage-empty__icon" aria-hidden="true">◉</div>}
+            <h2>{room?.isLive ? 'Conectando à transmissão…' : 'Pronto para compartilhar?'}</h2>
+            <p>{room?.isLive
+              ? `Transmitido por ${room?.presenterName || room?.ownerName || 'um participante da sala'}.`
+              : 'Qualquer pessoa na sala pode iniciar uma transmissão de tela. A conversa continua no Discord.'}</p>
+            {!room?.isLive && <button type="button" className="rooms-primary-button" disabled={reconnecting} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : 'Escolher tela'}</button>}
           </div>
         )}
       </section>
 
       <footer className="stream-room-footer">
-        <span>{role === 'host' ? 'Você é o anfitrião' : `Transmitido por ${room?.ownerName || 'Anfitrião'}`}</span>
+        <span>{isRoomOwner ? 'Você é o anfitrião' : room?.presenterName ? `Transmitindo: ${room.presenterName}` : 'Você está na sala'}</span>
         <span>{room?.viewerCount || 0} {room?.viewerCount === 1 ? 'espectador' : 'espectadores'}</span>
         <span className="stream-room-discord-note">Sem voz ou chat · continuem pelo Discord</span>
       </footer>
+      {reconnecting && <p className="rooms-toast" role="status">Reconectando à sala e restaurando a transmissão…</p>}
       {error && <p className="rooms-toast" role="alert">{error}</p>}
     </main>
   );

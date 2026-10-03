@@ -5,6 +5,7 @@ import { requestScreenCapture } from '../screenCapture.mjs';
 const LABEL_BITRATE = new Map([
   [700_000, 'Baixo · ~700 Kbps'], [2_000_000, 'Médio · ~2 Mbps'],
   [4_000_000, 'Alto · ~4 Mbps'], [8_000_000, 'Ultra · ~8 Mbps'],
+  [16_000_000, 'Máximo · ~16 Mbps'],
 ]);
 
 export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
@@ -96,7 +97,9 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
             <div className="screen-quality-card">
               <label className="screen-quality-adaptive">
                 <input type="checkbox" checked={quality.adaptiveQuality} onChange={(event) => atualizar('adaptiveQuality', event.target.checked)} />
-                <span><strong>Qualidade inteligente</strong><small>Divide o bitrate entre espectadores para poupar seu upload; a resolução e os quadros ficam limitados pelas opções abaixo.</small></span>
+                <span><strong>Qualidade inteligente</strong><small>{quality.adaptiveQuality
+                  ? 'Divide o limite de bitrate entre espectadores para poupar upload; a rede ainda pode reduzir o valor real.'
+                  : `Prioriza até ${(quality.bitrate / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} Mbps por espectador. O upload cresce por pessoa e a rede ainda pode reduzir o valor real.`}</small></span>
               </label>
               <fieldset className="screen-content-type">
                 <legend>O que você está compartilhando</legend>
@@ -124,6 +127,7 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
                   <select value={quality.bitrate} onChange={(event) => atualizar('bitrate', Number(event.target.value))}>
                     {STREAM_QUALITY_OPTIONS.bitrates.map((value) => <option key={value} value={value}>{LABEL_BITRATE.get(value)}</option>)}
                   </select>
+                  <small>16 Mbps é um teto, não uma garantia: upload, Wi‑Fi e capacidade do computador influenciam o resultado.</small>
                 </label>
               </div>
               <label className="screen-quality-audio">

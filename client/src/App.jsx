@@ -449,9 +449,33 @@ export default function App() {
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
   }
 
-  function abrirSala({ roomId, accessCode = '' }) {
+  async function abrirSala({ roomId, accessCode = '' }) {
+    if (!roomId) {
+      const codigo = typeof accessCode === 'string' ? accessCode.trim().toUpperCase() : '';
+      if (!codigo) return { ok: false, error: 'Informe o código de acesso.' };
+      const resposta = await emitirSolicitacaoSala(socket, 'salas:entrar', { accessCode: codigo });
+      if (!resposta?.ok) return resposta || { ok: false, error: 'Não foi possível entrar na sala.' };
+
+      const roomIdResolvido = resposta.room?.id;
+      if (!roomIdResolvido) {
+        return { ok: false, error: 'O servidor não identificou a sala deste código.' };
+      }
+      setActiveRoom({
+        ...resposta.room,
+        roomId: roomIdResolvido,
+        role: 'viewer',
+        accessCode: codigo,
+        joinedInitially: true,
+        presenterSocketId: resposta.presenterSocketId ?? resposta.room.presenterSocketId ?? null,
+        presenterName: resposta.presenterName ?? resposta.room.presenterName ?? null,
+      });
+      alterarEnderecoDaSala(roomIdResolvido);
+      return { ok: true };
+    }
+
     setActiveRoom({ roomId, role: 'viewer', accessCode, joinedInitially: false });
     alterarEnderecoDaSala(roomId);
+    return { ok: true };
   }
 
   async function criarSala(dados) {
@@ -520,7 +544,22 @@ export default function App() {
     return (
       <div className="app app--screen-rooms">
         {activeRoom ? (
-          <StreamRoom socket={socket} roomId={activeRoom.roomId} role="viewer" accessCode={activeRoom.accessCode} onExit={fecharSala} />
+          <>
+            <StreamRoom
+              socket={socket}
+              roomId={activeRoom.roomId}
+              role="viewer"
+              room={activeRoom}
+              accessCode={activeRoom.accessCode}
+              joinedInitially={activeRoom.joinedInitially}
+              localStream={screenStream}
+              quality={screenQuality || undefined}
+              onRequestShare={() => setPickerTelaAberto(true)}
+              onStopShare={pararCompartilhamentoDaSala}
+              onExit={fecharSala}
+            />
+            {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
+          </>
         ) : (
           <RoomLobby
             socket={socket}
@@ -530,6 +569,9 @@ export default function App() {
             onEntrar={abrirSala}
             onAbrirPerfil={() => setGuestLoginOpen(true)}
           />
+        )}
+        {activeRoom && pickerTelaAberto && (
+          <ScreenShareSourcePicker onFechar={() => setPickerTelaAberto(false)} onSelecionar={handleCompartilharTela} />
         )}
       </div>
     );

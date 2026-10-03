@@ -8,6 +8,7 @@ export function createStreamRoomPeerSession({
   role,
   quality = {},
   onRemoteStream = () => {},
+  onQualityError = () => {},
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
 }) {
   const peers = new Map();
@@ -64,7 +65,11 @@ export function createStreamRoomPeerSession({
         maxBitrate: video.maxBitrate,
       }));
       parameters.degradationPreference = video.degradationPreference;
-      await sender.setParameters(parameters).catch(() => {});
+      try {
+        await sender.setParameters(parameters);
+      } catch (error) {
+        onQualityError(error);
+      }
     }));
   }
 
@@ -72,6 +77,16 @@ export function createStreamRoomPeerSession({
     if (closed || role !== 'host' || !localStream || !peerId) return Promise.resolve();
     viewers.add(peerId);
     if (connecting.has(peerId)) return connecting.get(peerId);
+    const existingPeer = peers.get(peerId);
+    if (existingPeer) {
+      // A viewer may announce readiness after the first offer was sent but before
+      // it registered its listener. Re-send the same pending offer, never create
+      // a second offer on the same RTCPeerConnection.
+      if (!existingPeer.remoteDescription && existingPeer.localDescription?.type === 'offer') {
+        emitSignal('offer', peerId, existingPeer.localDescription);
+      }
+      return Promise.resolve();
+    }
     const connection = (async () => {
       const peer = createPeer(peerId);
       if (!peer.getSenders().some((sender) => sender.track && localStream.getTracks().includes(sender.track))) {
@@ -89,6 +104,12 @@ export function createStreamRoomPeerSession({
   async function receiveOffer(message = {}) {
     if (closed || role !== 'viewer' || message.roomId !== roomId || !message.de || !message.descricao) return;
     const peer = createPeer(message.de);
+    if (peer.remoteDescription?.sdp === message.descricao.sdp && peer.localDescription?.type === 'answer') {
+      // The presenter can retry an offer if our first answer was lost. Re-send
+      // the existing answer rather than applying the same offer twice.
+      emitSignal('answer', message.de, peer.localDescription);
+      return;
+    }
     await peer.setRemoteDescription(message.descricao);
     await applyWaitingCandidates(message.de, peer);
     const answer = await peer.createAnswer();
@@ -119,10 +140,13 @@ export function createStreamRoomPeerSession({
   }
 
   function closePeer(peerId, preserveViewer = false) {
-    const peer = peers.get(peerId);
-    if (!peer) return;
-    peers.delete(peerId);
     if (!preserveViewer) viewers.delete(peerId);
+    const peer = peers.get(peerId);
+    if (!peer) {
+      if (role === 'host') updateVideoBitrates().catch(() => {});
+      return;
+    }
+    peers.delete(peerId);
     candidatesWaitingForDescription.delete(peerId);
     connecting.delete(peerId);
     peer.onicecandidate = null;
@@ -141,6 +165,21 @@ export function createStreamRoomPeerSession({
 
   function onViewerLeft(message = {}) {
     if (message.salaId === roomId && message.socketId) closePeer(message.socketId);
+  }
+
+  function setViewers(peerSocketIds = []) {
+    if (role !== 'host') return Promise.resolve();
+    const nextViewers = new Set(peerSocketIds.filter((peerId) => typeof peerId === 'string' && peerId && peerId !== socket.id));
+    [...viewers].forEach((peerId) => {
+      if (!nextViewers.has(peerId)) closePeer(peerId);
+    });
+    nextViewers.forEach((peerId) => viewers.add(peerId));
+    if (!localStream) return Promise.resolve();
+    return Promise.all([...nextViewers].map((peerId) => connectViewer(peerId).catch(() => closePeer(peerId))));
+  }
+
+  function resetPeers() {
+    [...peers.keys()].forEach((peerId) => closePeer(peerId));
   }
 
   const listeners = [
@@ -162,6 +201,8 @@ export function createStreamRoomPeerSession({
       }
       [...viewers].forEach((peerId) => connectViewer(peerId).catch(() => closePeer(peerId)));
     },
+    setViewers,
+    resetPeers,
     setQuality(nextQuality = {}) {
       currentQuality = nextQuality;
       if (role === 'host') updateVideoBitrates().catch(() => {});

@@ -18,12 +18,14 @@ class FakePeerConnection {
     this.remoteDescription = null;
     this.addedCandidates = [];
     this.connectionState = 'new';
+    this.offerCalls = 0;
+    this.answerCalls = 0;
     FakePeerConnection.instances.push(this);
   }
   addTrack(track, stream) { const sender = { track, stream, params: { encodings: [{}] }, getParameters() { return this.params; }, setParameters: async (params) => { sender.params = params; } }; this.senders.push(sender); return sender; }
   getSenders() { return this.senders; }
-  async createOffer() { return { type: 'offer', sdp: 'offer-sdp' }; }
-  async createAnswer() { return { type: 'answer', sdp: 'answer-sdp' }; }
+  async createOffer() { this.offerCalls += 1; return { type: 'offer', sdp: 'offer-sdp' }; }
+  async createAnswer() { this.answerCalls += 1; return { type: 'answer', sdp: 'answer-sdp' }; }
   async setLocalDescription(value) { this.localDescription = value; }
   async setRemoteDescription(value) { this.remoteDescription = value; }
   async addIceCandidate(value) { this.addedCandidates.push(value); }
@@ -50,6 +52,48 @@ test('stream peer: host creates offers only for viewers in its room', async () =
   session.close();
 });
 
+test('stream peer: default high-quality profile applies a 16 Mbps ceiling to each sender', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const session = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'host', RTCPeerConnectionImpl: FakePeerConnection });
+  session.setLocalStream(makeStream());
+  socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-a' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(FakePeerConnection.instances[0].senders[0].params.encodings[0].maxBitrate, 16_000_000);
+  session.close();
+});
+
+test('stream peer: a newly elected presenter offers the existing room participants', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const session = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'host', RTCPeerConnectionImpl: FakePeerConnection });
+  session.setLocalStream(makeStream());
+  await session.setViewers(['viewer-a', 'viewer-b']);
+  await new Promise((resolve) => setImmediate(resolve));
+  const offers = socket.sent.filter(({ event }) => event === 'sala:sinal:oferta');
+  assert.deepEqual(offers.map(({ payload }) => payload.para).sort(), ['viewer-a', 'viewer-b']);
+  assert.equal(session.getPeerCount(), 2);
+  session.resetPeers();
+  assert.equal(session.getPeerCount(), 0);
+  assert.equal(FakePeerConnection.instances.every((peer) => peer.connectionState === 'closed'), true);
+  session.close();
+});
+
+test('stream peer: readiness retries a pending offer without renegotiating', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const session = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'host', RTCPeerConnectionImpl: FakePeerConnection });
+  session.setLocalStream(makeStream());
+  socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-a' });
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-a' });
+  const offers = socket.sent.filter(({ event }) => event === 'sala:sinal:oferta');
+  assert.equal(offers.length, 2, 'readiness should resend the offer in case the viewer missed it');
+  assert.deepEqual(offers[0].payload.descricao, offers[1].payload.descricao);
+  assert.equal(FakePeerConnection.instances[0].offerCalls, 1, 'retry should reuse the existing offer');
+  session.close();
+});
+
 test('stream peer: viewers answer offers and apply ICE candidates received early', async () => {
   FakePeerConnection.instances = [];
   const socket = new FakeSocket();
@@ -63,6 +107,22 @@ test('stream peer: viewers answer offers and apply ICE candidates received early
   assert.ok(socket.sent.some(({ event, payload }) => event === 'sala:sinal:resposta' && payload.para === 'host-a' && payload.resposta.sdp === 'answer-sdp'));
   FakePeerConnection.instances[0].ontrack({ streams: [remoteStream] });
   assert.equal(shown, remoteStream);
+  session.close();
+});
+
+test('stream peer: repeated offer retries resend the cached answer', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const session = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'viewer', RTCPeerConnectionImpl: FakePeerConnection });
+  const offer = { roomId: 'room-1', de: 'host-a', descricao: { type: 'offer', sdp: 'host-offer' } };
+  socket.receive('sala:sinal:oferta', offer);
+  await new Promise((resolve) => setImmediate(resolve));
+  socket.receive('sala:sinal:oferta', offer);
+  await new Promise((resolve) => setImmediate(resolve));
+  const answers = socket.sent.filter(({ event }) => event === 'sala:sinal:resposta');
+  assert.equal(answers.length, 2);
+  assert.deepEqual(answers[0].payload.resposta, answers[1].payload.resposta);
+  assert.equal(FakePeerConnection.instances[0].answerCalls, 1);
   session.close();
 });
 
@@ -87,5 +147,44 @@ test('stream peer: viewers remain available when the host stops and restarts scr
   session.setLocalStream(makeStream());
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(socket.sent.filter(({ event }) => event === 'sala:sinal:oferta').length, 2);
+  session.close();
+});
+
+test('stream peer: leaving before screen capture does not retain a stale viewer', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const session = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'host', RTCPeerConnectionImpl: FakePeerConnection });
+  socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-gone' });
+  socket.receive('sala:espectador-saiu', { salaId: 'room-1', socketId: 'viewer-gone' });
+  session.setLocalStream(makeStream());
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(session.getPeerCount(), 0);
+  assert.equal(socket.sent.some(({ event }) => event === 'sala:sinal:oferta'), false);
+  session.close();
+});
+
+test('stream peer: reports when the browser rejects the requested bitrate', async () => {
+  class RejectingBitratePeerConnection extends FakePeerConnection {
+    addTrack(track, stream) {
+      const sender = super.addTrack(track, stream);
+      sender.setParameters = async () => { throw new Error('unsupported bitrate'); };
+      return sender;
+    }
+  }
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const qualityErrors = [];
+  const session = createStreamRoomPeerSession({
+    socket,
+    roomId: 'room-1',
+    role: 'host',
+    onQualityError: (error) => qualityErrors.push(error),
+    RTCPeerConnectionImpl: RejectingBitratePeerConnection,
+  });
+  session.setLocalStream(makeStream());
+  socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-a' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(qualityErrors.length, 1);
+  assert.match(qualityErrors[0].message, /unsupported bitrate/);
   session.close();
 });

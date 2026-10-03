@@ -29,16 +29,53 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
   const salas = new Map();
   const salasPorSocket = new Map();
 
+  function gerarCodigoPrivadoUnico() {
+    for (let tentativa = 0; tentativa < 8; tentativa += 1) {
+      const codigo = makeCode();
+      if (typeof codigo !== 'string' || !codigo.trim()) continue;
+      const jaExiste = Array.from(salas.values()).some((sala) => (
+        sala.accessCode && compararCodigo(codigo, sala.accessCode)
+      ));
+      if (!jaExiste) return codigo;
+    }
+    return null;
+  }
+
+  function resolvePrivateRoomId(accessCode) {
+    const sala = Array.from(salas.values()).find((item) => (
+      item.visibility === 'private'
+      && item.accessCode
+      && compararCodigo(accessCode, item.accessCode)
+    ));
+    return sala?.id ?? null;
+  }
+
+  function socketsDaSala(sala, excluirSocketId = null) {
+    return [sala.ownerSocketId, ...sala.viewers.keys()]
+      .filter((socketId) => socketId !== excluirSocketId);
+  }
+
+  function nomeDoMembro(sala, socketId) {
+    if (socketId === sala.ownerSocketId) return sala.ownerName;
+    return sala.viewers.get(socketId)?.userName || 'Visitante';
+  }
+
   function resultadoDeEntrada(sala, socketId, role) {
-    const peerSocketIds = role === 'host'
-      ? Array.from(sala.viewers.keys())
-      : [sala.ownerSocketId];
+    const peerSocketIds = sala.presenterSocketId
+      ? (sala.presenterSocketId === socketId
+        ? socketsDaSala(sala, socketId)
+        : [sala.presenterSocketId])
+      : role === 'host'
+        ? Array.from(sala.viewers.keys())
+        : [sala.ownerSocketId];
     return {
       ok: true,
       room: criarResumoSala(sala),
       role,
       hostSocketId: sala.ownerSocketId,
       peerSocketIds,
+      presenterSocketId: sala.presenterSocketId,
+      presenterName: sala.presenterName,
       ...(role === 'host' && sala.accessCode ? { accessCode: sala.accessCode } : {}),
     };
   }
@@ -50,6 +87,11 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
     if (!nome || nome.length > 60) return { ok: false, error: 'O nome deve ter entre 1 e 60 caracteres.' };
     if (visibility !== 'public' && visibility !== 'private') return { ok: false, error: 'Escolha se a sala será pública ou privada.' };
 
+    const accessCode = visibility === 'private' ? gerarCodigoPrivadoUnico() : null;
+    if (visibility === 'private' && !accessCode) {
+      return { ok: false, error: 'Não foi possível gerar um código único para a sala. Tente novamente.' };
+    }
+
     const id = makeId();
     if (!id || salas.has(id)) return { ok: false, error: 'Não foi possível criar um identificador de sala.' };
     const sala = {
@@ -59,19 +101,35 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       ownerName: typeof ownerName === 'string' && ownerName.trim() ? ownerName.trim().slice(0, 32) : 'Anfitrião',
       ownerSocketId,
       visibility,
-      accessCode: visibility === 'private' ? makeCode() : null,
+      accessCode,
       isLive: false,
+      presenterSocketId: null,
+      presenterName: null,
       viewers: new Map(),
       createdAt: new Date().toISOString(),
     };
     salas.set(id, sala);
     salasPorSocket.set(ownerSocketId, { roomId: id, role: 'host' });
-    return { ok: true, room: criarResumoSala(sala), role: 'host', peerSocketIds: [], ...(sala.accessCode ? { accessCode: sala.accessCode } : {}) };
+    return {
+      ok: true,
+      room: criarResumoSala(sala),
+      role: 'host',
+      peerSocketIds: [],
+      presenterSocketId: null,
+      presenterName: null,
+      ...(sala.accessCode ? { accessCode: sala.accessCode } : {}),
+    };
   }
 
-  function joinRoom({ roomId, socketId, userId = null, accessCode }) {
+  function joinRoom({ roomId: requestedRoomId, socketId, userId = null, userName, accessCode }) {
+    const roomId = requestedRoomId || resolvePrivateRoomId(accessCode);
     const sala = salas.get(roomId);
-    if (!sala) return { ok: false, error: 'Esta sala não está mais ativa.' };
+    if (!sala) {
+      return {
+        ok: false,
+        error: requestedRoomId ? 'Esta sala não está mais ativa.' : 'Código inválido ou sala encerrada.',
+      };
+    }
     if (!socketId) return { ok: false, error: 'Conexão inválida.' };
 
     const membership = salasPorSocket.get(socketId);
@@ -84,7 +142,12 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
     }
 
     const role = socketId === sala.ownerSocketId ? 'host' : 'viewer';
-    if (role === 'viewer') sala.viewers.set(socketId, { userId });
+    if (role === 'viewer') {
+      const nome = typeof userName === 'string' && userName.trim()
+        ? userName.trim().slice(0, 32)
+        : 'Visitante';
+      sala.viewers.set(socketId, { userId, userName: nome });
+    }
     salasPorSocket.set(socketId, { roomId, role });
     return resultadoDeEntrada(sala, socketId, role);
   }
@@ -92,11 +155,50 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
   function setLive(roomId, socketId, isLive) {
     const sala = salas.get(roomId);
     if (!sala) return { ok: false, error: 'Esta sala não está mais ativa.' };
-    if (sala.ownerSocketId !== socketId || salasPorSocket.get(socketId)?.role !== 'host') {
-      return { ok: false, error: 'Somente o anfitrião pode controlar a transmissão.' };
+    const membership = salasPorSocket.get(socketId);
+    if (!membership || membership.roomId !== roomId) {
+      return { ok: false, error: 'Entre na sala antes de controlar a transmissão.' };
     }
-    sala.isLive = Boolean(isLive);
-    return { ok: true, room: criarResumoSala(sala), peerSocketIds: Array.from(sala.viewers.keys()) };
+
+    let previousPresenterSocketId = null;
+    let previousPresenterName = null;
+    if (Boolean(isLive)) {
+      if (sala.presenterSocketId && sala.presenterSocketId !== socketId) {
+        return {
+          ok: false,
+          error: 'Já existe uma transmissão ativa nesta sala.',
+          presenterSocketId: sala.presenterSocketId,
+          presenterName: sala.presenterName,
+        };
+      }
+      sala.presenterSocketId = socketId;
+      sala.presenterName = nomeDoMembro(sala, socketId);
+      sala.isLive = true;
+    } else {
+      if (sala.presenterSocketId && sala.presenterSocketId !== socketId) {
+        return {
+          ok: false,
+          error: 'Somente quem está transmitindo pode parar a transmissão.',
+          presenterSocketId: sala.presenterSocketId,
+          presenterName: sala.presenterName,
+        };
+      }
+      previousPresenterSocketId = sala.presenterSocketId;
+      previousPresenterName = sala.presenterName;
+      sala.presenterSocketId = null;
+      sala.presenterName = null;
+      sala.isLive = false;
+    }
+
+    return {
+      ok: true,
+      room: criarResumoSala(sala),
+      peerSocketIds: socketsDaSala(sala, socketId),
+      presenterSocketId: sala.presenterSocketId,
+      presenterName: sala.presenterName,
+      previousPresenterSocketId,
+      previousPresenterName,
+    };
   }
 
   function endRoom(roomId, socketId) {
@@ -106,10 +208,20 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       return { ok: false, error: 'Somente o anfitrião pode encerrar a sala.' };
     }
     const viewerSocketIds = Array.from(sala.viewers.keys());
+    const presenterSocketId = sala.presenterSocketId;
+    const presenterName = sala.presenterName;
     salasPorSocket.delete(sala.ownerSocketId);
     viewerSocketIds.forEach((viewerSocketId) => salasPorSocket.delete(viewerSocketId));
     salas.delete(roomId);
-    return { ok: true, closed: true, roomId, hostSocketId: sala.ownerSocketId, viewerSocketIds };
+    return {
+      ok: true,
+      closed: true,
+      roomId,
+      hostSocketId: sala.ownerSocketId,
+      viewerSocketIds,
+      presenterSocketId,
+      presenterName,
+    };
   }
 
   function leaveRoom(socketId) {
@@ -118,6 +230,13 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
     if (membership.role === 'host') return endRoom(membership.roomId, socketId);
 
     const sala = salas.get(membership.roomId);
+    const presenterSaiu = sala?.presenterSocketId === socketId;
+    const previousPresenterName = presenterSaiu ? nomeDoMembro(sala, socketId) : null;
+    if (presenterSaiu && sala) {
+      sala.presenterSocketId = null;
+      sala.presenterName = null;
+      sala.isLive = false;
+    }
     salasPorSocket.delete(socketId);
     sala?.viewers.delete(socketId);
     return {
@@ -125,6 +244,11 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
       closed: false,
       roomId: membership.roomId,
       hostSocketId: sala?.ownerSocketId,
+      presenterSocketId: sala?.presenterSocketId ?? null,
+      presenterName: sala?.presenterName ?? null,
+      transmissionStopped: presenterSaiu,
+      previousPresenterSocketId: presenterSaiu ? socketId : null,
+      previousPresenterName,
       room: sala ? criarResumoSala(sala) : null,
     };
   }
@@ -139,27 +263,35 @@ function createStreamRoomManager({ makeId = randomUUID, makeCode = gerarCodigo }
     return membership && membership.roomId === roomId ? membership.role : null;
   }
 
+  function getPresenterSocketId(roomId) {
+    return salas.get(roomId)?.presenterSocketId ?? null;
+  }
+
   function canSignal({ roomId, fromSocketId, toSocketId, signalType }) {
     const sala = salas.get(roomId);
     if (!sala || !sala.isLive || fromSocketId === toSocketId) return false;
     const fromRole = getSocketRole(fromSocketId, roomId);
     const toRole = getSocketRole(toSocketId, roomId);
-    if (!fromRole || !toRole || fromRole === toRole) return false;
+    if (!fromRole || !toRole || !sala.presenterSocketId) return false;
 
-    if (signalType === 'candidate') return true;
-    if (signalType === 'offer') return fromRole === 'host' && toRole === 'viewer';
-    if (signalType === 'answer') return fromRole === 'viewer' && toRole === 'host';
+    if (signalType === 'offer') return fromSocketId === sala.presenterSocketId;
+    if (signalType === 'answer') return toSocketId === sala.presenterSocketId;
+    if (signalType === 'candidate') {
+      return fromSocketId === sala.presenterSocketId || toSocketId === sala.presenterSocketId;
+    }
     return false;
   }
 
   return {
     createRoom,
     joinRoom,
+    resolvePrivateRoomId,
     setLive,
     endRoom,
     leaveRoom,
     getRoom,
     getSocketRole,
+    getPresenterSocketId,
     canSignal,
     listPublicRooms: () => Array.from(salas.values())
       .filter((sala) => sala.visibility === 'public' && sala.isLive)
@@ -249,18 +381,40 @@ function registrarEventosSala({ socket, io, manager }) {
 
   function avisarEncerramento(result) {
     const nomeSala = nomeSalaSocket(result.roomId);
+    if (result.presenterSocketId) {
+      io.to(nomeSala).emit('sala:transmissao', {
+        salaId: result.roomId,
+        isLive: false,
+        presenterSocketId: null,
+        presenterName: null,
+        previousPresenterSocketId: result.presenterSocketId,
+        previousPresenterName: result.presenterName,
+      });
+    }
     io.to(nomeSala).emit('sala:encerrada', { salaId: result.roomId });
     removerMembrosDaSala(nomeSala, [result.hostSocketId, ...result.viewerSocketIds], true);
     publicarSalas();
   }
 
   function avisarSaidaDoEspectador(result, socketId) {
-    removerMembrosDaSala(nomeSalaSocket(result.roomId), [socketId]);
-    if (result.hostSocketId) {
-      io.to(result.hostSocketId).emit('sala:espectador-saiu', { salaId: result.roomId, socketId });
+    const nomeSala = nomeSalaSocket(result.roomId);
+    removerMembrosDaSala(nomeSala, [socketId]);
+    if (result.transmissionStopped) {
+      io.to(nomeSala).emit('sala:transmissao', {
+        salaId: result.roomId,
+        isLive: false,
+        presenterSocketId: null,
+        presenterName: null,
+        previousPresenterSocketId: result.previousPresenterSocketId,
+        previousPresenterName: result.previousPresenterName,
+      });
+    }
+    const presenterOrHost = result.presenterSocketId || result.hostSocketId;
+    if (presenterOrHost && presenterOrHost !== socketId) {
+      io.to(presenterOrHost).emit('sala:espectador-saiu', { salaId: result.roomId, socketId });
     }
     if (result.room) {
-      io.to(nomeSalaSocket(result.roomId)).emit('sala:estado', { sala: result.room });
+      io.to(nomeSala).emit('sala:estado', { sala: result.room });
     }
     publicarSalas();
   }
@@ -353,40 +507,73 @@ function registrarEventosSala({ socket, io, manager }) {
       reply(callback, { ok: false, error: 'Sua entrada em uma sala ainda está sendo processada.' });
       return;
     }
-    const roleBeforeJoin = manager.getSocketRole(socket.id, dados.roomId);
+    const salaIdSolicitada = dados.roomId || manager.resolvePrivateRoomId(dados.accessCode);
+    const roleBeforeJoin = salaIdSolicitada
+      ? manager.getSocketRole(socket.id, salaIdSolicitada)
+      : null;
     const result = manager.joinRoom({
-      roomId: dados.roomId,
+      roomId: salaIdSolicitada,
       socketId: socket.id,
       userId: socket.usuario?.id ?? null,
+      userName: socket.usuario?.nome ?? (socket.espectadorAnonimo ? 'Visitante' : 'Espectador'),
       accessCode: dados.accessCode,
     });
     if (!result.ok) {
       reply(callback, result);
       return;
     }
-    const tentativa = iniciarEntrada(dados.roomId);
-    Promise.resolve().then(() => socket.join(nomeSalaSocket(dados.roomId))).then(() => {
+    const roomId = result.room.id;
+    const tentativa = iniciarEntrada(roomId);
+    Promise.resolve().then(() => socket.join(nomeSalaSocket(roomId))).then(() => {
       if (!entradaAindaValida(tentativa)) {
         rejeitarEntradaConcluida(
           tentativa,
-          nomeSalaSocket(dados.roomId),
+          nomeSalaSocket(roomId),
           callback,
           'A conexão foi encerrada antes de entrar na sala.',
         );
         return;
       }
-      concluirEntrada(tentativa);
-      reply(callback, result);
-      if (result.role === 'viewer' && !roleBeforeJoin) {
-        io.to(result.hostSocketId).emit('sala:espectador-entrou', { salaId: dados.roomId, socketId: socket.id });
+      const resultadoAtualizado = manager.joinRoom({
+        roomId,
+        socketId: socket.id,
+        userId: socket.usuario?.id ?? null,
+        userName: socket.usuario?.nome ?? (socket.espectadorAnonimo ? 'Visitante' : 'Espectador'),
+        accessCode: dados.accessCode,
+      });
+      if (!resultadoAtualizado.ok) {
+        rejeitarEntradaConcluida(tentativa, nomeSalaSocket(roomId), callback, resultadoAtualizado.error);
+        return;
       }
-      socket.emit('sala:estado', { sala: result.room });
+      concluirEntrada(tentativa);
+      reply(callback, resultadoAtualizado);
+      if (resultadoAtualizado.role === 'viewer' && !roleBeforeJoin) {
+        const presenterOrHost = resultadoAtualizado.presenterSocketId || resultadoAtualizado.hostSocketId;
+        io.to(presenterOrHost).emit('sala:espectador-entrou', { salaId: roomId, socketId: socket.id });
+      }
+      socket.emit('sala:estado', { sala: resultadoAtualizado.room });
       publicarSalas();
     }, () => {
       concluirEntrada(tentativa);
-      reverterEntradaFalha(nomeSalaSocket(dados.roomId));
+      reverterEntradaFalha(nomeSalaSocket(roomId));
       reply(callback, { ok: false, error: 'Não foi possível entrar na sala.' });
     });
+  });
+
+  socket.on('sala:espectador-pronto', (dados, callback) => {
+    dados = objetoOuVazio(dados);
+    if (!dados.roomId || entradaPendente?.roomId === dados.roomId
+      || !manager.getSocketRole(socket.id, dados.roomId)
+      || !pertenceASala(socket.id, dados.roomId)) {
+      reply(callback, { ok: false, error: 'Entre na sala antes de receber a transmissão.' });
+      return;
+    }
+
+    const presenterSocketId = manager.getPresenterSocketId(dados.roomId);
+    if (presenterSocketId && presenterSocketId !== socket.id) {
+      io.to(presenterSocketId).emit('sala:espectador-entrou', { salaId: dados.roomId, socketId: socket.id });
+    }
+    reply(callback, { ok: true, presenterSocketId });
   });
 
   socket.on('salas:ao-vivo', (dados, callback) => {
@@ -400,7 +587,14 @@ function registrarEventosSala({ socket, io, manager }) {
       reply(callback, result);
       return;
     }
-    io.to(nomeSalaSocket(dados.roomId)).emit('sala:transmissao', { salaId: dados.roomId, isLive: result.room.isLive });
+    io.to(nomeSalaSocket(dados.roomId)).emit('sala:transmissao', {
+      salaId: dados.roomId,
+      isLive: result.room.isLive,
+      presenterSocketId: result.presenterSocketId,
+      presenterName: result.presenterName,
+      previousPresenterSocketId: result.previousPresenterSocketId,
+      previousPresenterName: result.previousPresenterName,
+    });
     io.to(nomeSalaSocket(dados.roomId)).emit('sala:estado', { sala: result.room });
     publicarSalas();
     reply(callback, result);

@@ -17,7 +17,6 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
   const [entrando, setEntrando] = useState(false);
   const [salaEmEntrada, setSalaEmEntrada] = useState('');
   const [modalCodigoAberto, setModalCodigoAberto] = useState(false);
-  const [idSalaPrivada, setIdSalaPrivada] = useState('');
   const [codigoAcesso, setCodigoAcesso] = useState('');
   const [codigoConviteCriado, setCodigoConviteCriado] = useState('');
   const requestIdRef = useRef(0);
@@ -74,7 +73,7 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
     if (typeof document === 'undefined') return undefined;
 
     const elementoAnterior = document.activeElement;
-    document.getElementById('room-lobby-private-room')?.focus();
+    document.getElementById('room-lobby-access-code')?.focus();
     const controlarTeclado = (evento) => {
       if (evento.key === 'Escape' && !entrandoRef.current) {
         setModalCodigoAberto(false);
@@ -132,22 +131,22 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
   }
 
   async function entrarNaSala(roomId, accessCode = '') {
-    if (!roomId) {
-      setErroAcao('O convite não contém um ID de sala válido.');
+    if (!roomId && !accessCode.trim()) {
+      setErroAcao('Informe o código de acesso.');
       return false;
     }
     setErroAcao('');
-    setSalaEmEntrada(roomId);
+    setSalaEmEntrada(roomId || 'codigo');
     setEntrando(true);
     try {
       if (typeof onEntrar !== 'function') throw new Error('A entrada em salas não está disponível agora.');
-      const resultado = await onEntrar({ roomId, accessCode });
+      const dadosEntrada = roomId ? { roomId, accessCode } : { accessCode };
+      const resultado = await onEntrar(dadosEntrada);
       if (resultado?.ok === false) {
         setErroAcao(mensagemDoErro(resultado.error, 'Não foi possível entrar na sala.'));
         return false;
       }
       setModalCodigoAberto(false);
-      setIdSalaPrivada('');
       setCodigoAcesso('');
       return true;
     } catch (erro) {
@@ -161,13 +160,12 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
 
   async function entrarComCodigo(evento) {
     evento.preventDefault();
-    const roomId = idSalaPrivada.trim();
     const accessCode = codigoAcesso.trim().toUpperCase();
-    if (!roomId || !accessCode) {
-      setErroAcao('Informe o ID da sala e o código de acesso.');
+    if (!accessCode) {
+      setErroAcao('Informe o código de acesso.');
       return;
     }
-    await entrarNaSala(roomId, accessCode);
+    await entrarNaSala('', accessCode);
   }
 
   const nomeUsuario = usuario?.nome?.trim() || 'Visitante';
@@ -357,19 +355,8 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
             <div className="room-lobby__dialog-mark" aria-hidden="true">⌑</div>
             <p className="room-lobby__section-kicker">ACESSO PRIVADO</p>
             <h2 id="room-lobby-dialog-title">Entre por convite</h2>
-            <p id="room-lobby-dialog-copy">Informe o ID da sala e o código recebidos de quem está transmitindo.</p>
+            <p id="room-lobby-dialog-copy">Informe o código de acesso compartilhado por quem está transmitindo.</p>
             <form className="room-lobby__private-form" onSubmit={entrarComCodigo}>
-              <label className="room-lobby__field-label" htmlFor="room-lobby-private-room">ID da sala</label>
-              <input
-                id="room-lobby-private-room"
-                aria-label="ID da sala privada"
-                className="room-lobby__input"
-                type="text"
-                value={idSalaPrivada}
-                onChange={(evento) => setIdSalaPrivada(evento.target.value)}
-                autoComplete="off"
-                required
-              />
               <label className="room-lobby__field-label" htmlFor="room-lobby-access-code">Código de acesso</label>
               <input
                 id="room-lobby-access-code"
@@ -378,13 +365,14 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
                 type="text"
                 value={codigoAcesso}
                 onChange={(evento) => setCodigoAcesso(evento.target.value.toUpperCase())}
-                autoComplete="off"
+                autoComplete="one-time-code"
                 autoCapitalize="characters"
                 spellCheck="false"
+                maxLength={8}
                 required
               />
               {erroAcao && <p className="room-lobby__notice room-lobby__notice--error" role="alert">{erroAcao}</p>}
-              <button className="room-lobby__create-button" type="submit" disabled={entrando || !idSalaPrivada.trim() || !codigoAcesso.trim()}>
+              <button className="room-lobby__create-button" type="submit" disabled={entrando || !codigoAcesso.trim()}>
                 {entrando ? 'Entrando…' : 'Entrar na sala'} <span aria-hidden="true">→</span>
               </button>
             </form>

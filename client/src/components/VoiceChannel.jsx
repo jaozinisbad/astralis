@@ -1,39 +1,13 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
+import { getCaptureConstraints, getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
 
 // Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
 // a descobrirem como se alcançar através da internet (NAT traversal).
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
-// Bitrates-alvo pro compartilhamento de tela. Sem isso, o WebRTC usa um
-// teto bem conservador por padrão (pensado pra webcam, não pra tela/jogo
-// com texto fino), o que deixa a transmissão borrada/em blocos. Esses
-// valores são generosos pensando em hardware bom (RTX) do lado de quem
-// transmite — se a internet de upload de alguém for mais limitada, vale
-// reduzir esses números.
-// 720p60 subiu de 3.5 pra 6 Mbps: jogo com movimento rápido gasta muito
-// mais bits por frame do que uma tela parada, e o valor antigo deixava
-// o encoder "sem munição" nesses momentos — daí o efeito borrado.
-const BITRATE_TELA = {
-  '720p': 6_000_000,
-  '1080p': 8_000_000,
-};
-
-// Isso aqui é malha P2P (cada espectador é uma RTCPeerConnection própria),
-// não um servidor central — então se eu simplesmente mandar 6 Mbps pra
-// cada espectador, com 3 pessoas assistindo isso já são 18 Mbps de upload
-// simultâneos. A internet de upload de quem compartilha quase nunca aguenta
-// isso, o WebRTC entra em modo de congestionamento pra compensar, e a
-// imagem final fica PIOR do que estava com o valor antigo (mesmo o "alvo"
-// sendo mais alto agora). Por isso: um orçamento TOTAL de banda que é
-// dividido entre quantos estiverem vendo a tela no momento, com um piso
-// mínimo pra não ficar ilegível quando tiver muita gente.
-const BITRATE_TOTAL_TELA = {
-  '720p': 9_000_000,
-  '1080p': 12_000_000,
-};
-const BITRATE_MINIMO_TELA = 2_000_000;
-
+// O perfil de captura e o teto de bitrate vêm do seletor compartilhado
+// com as salas; cada conexão P2P recebe o limite calculado para esse perfil.
 // Bitrate de áudio mais alto que o padrão do Opus (que gira uns 32kbps)
 // — com um microfone bom, vale a pena usar mais banda pra manter a
 // clareza da voz.
@@ -89,8 +63,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [emTelaCheia, setEmTelaCheia] = useState(false);
   const [conectando, setConectando] = useState(true);
   const [compartilhandoTela, setCompartilhandoTela] = useState(false);
-  const [resolucaoTela, setResolucaoTela] = useState('720p');
-  const [fpsTela, setFpsTela] = useState('30');
+  const [resolucaoTela, setResolucaoTela] = useState('1080p');
+  const [fpsTela, setFpsTela] = useState('60');
   const [telasRemotas, setTelasRemotas] = useState({}); // socketId -> MediaStream
 
   // Pipeline de áudio local: microfone -> ganho (volume ajustável) ->
@@ -107,7 +81,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const telaLocalRef = useRef(null);
   const telaTileRef = useRef(null);
-  const resolucaoTelaAtualRef = useRef('720p'); // pra saber o alvo de bitrate ao (re)equilibrar entre espectadores
+  const resolucaoTelaAtualRef = useRef('1080p'); // pra saber o alvo de bitrate ao (re)equilibrar entre espectadores
+  const qualidadeTelaAtualRef = useRef(resolveStreamQuality());
+  const avisouFalhaQualidadeRef = useRef(false);
   const pipelineAudioProcessoRef = useRef(null); // { stream, receberChunk, destruir } quando usando audio por app
   const pararOuvinteAudioTelaRef = useRef(null); // funcao pra parar de escutar os chunks vindos do Electron
   const conexoesRef = useRef({}); // socketId -> RTCPeerConnection
@@ -120,14 +96,28 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const contextoAudioRef = useRef(null); // contexto só dos efeitos sonoros
   const telasComSomRef = useRef(new Set());
   const configuracaoAudioRef = useRef({ volumeEntrada: 100, volumeSaida: 100, microfoneId: '', foneId: '', perfilEntrada: 'isolamento', supressaoRuido: 'rnnoise', cancelamentoEco: true, ganhoAutomatico: true });
-  // Calcula quanto bitrate CADA espectador deve receber agora, dividindo o
-  // orçamento total pelo número de gente assistindo — em vez de mandar o
-  // mesmo valor alto pra todo mundo e estourar o upload de quem compartilha.
+  // Aplica o teto escolhido e, se a pessoa ativou qualidade inteligente,
+  // divide o orçamento entre espectadores para reduzir a demanda de upload.
   function bitratePorEspectador(res) {
     const numEspectadores = Math.max(1, Object.keys(conexoesRef.current).length);
-    const orcamentoTotal = BITRATE_TOTAL_TELA[res] || BITRATE_TOTAL_TELA['720p'];
-    const teto = BITRATE_TELA[res] || BITRATE_TELA['720p'];
-    return Math.max(BITRATE_MINIMO_TELA, Math.min(teto, orcamentoTotal / numEspectadores));
+    return getVideoEncodingParameters({ ...qualidadeTelaAtualRef.current, resolution: res }, numEspectadores).maxBitrate;
+  }
+
+  function aplicarQualidadeVideo(remetente, res, { fps, escala } = {}) {
+    const parametros = remetente.getParameters();
+    const encodings = parametros.encodings?.length ? parametros.encodings : [{}];
+    parametros.encodings = encodings.map((encoding) => ({
+      ...encoding,
+      maxBitrate: bitratePorEspectador(res),
+      ...(fps === undefined ? {} : { maxFramerate: fps }),
+      ...(escala === undefined ? {} : { scaleResolutionDownBy: escala }),
+    }));
+    parametros.degradationPreference = 'maintain-resolution';
+    remetente.setParameters(parametros).catch(() => {
+      if (avisouFalhaQualidadeRef.current) return;
+      avisouFalhaQualidadeRef.current = true;
+      setErroCompartilhamento('O navegador não aplicou o limite de bitrate solicitado; a transmissão continuará, mas pode ficar abaixo do perfil escolhido.');
+    });
   }
 
   // Reaplica o bitrate em TODAS as conexões que já estão recebendo a tela —
@@ -137,15 +127,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   function reaplicarBitrateTela() {
     const videoTrack = telaLocalRef.current?.getVideoTracks()[0];
     if (!videoTrack) return;
-    const alvo = bitratePorEspectador(resolucaoTelaAtualRef.current);
     Object.values(conexoesRef.current).forEach((pc) => {
       const remetente = pc.getSenders().find((s) => s.track === videoTrack);
       if (!remetente) return;
-      const parametros = remetente.getParameters();
-      if (!parametros.encodings?.length) parametros.encodings = [{}];
-      parametros.encodings[0].maxBitrate = alvo;
-      parametros.degradationPreference = 'maintain-resolution';
-      remetente.setParameters(parametros).catch(() => {});
+      aplicarQualidadeVideo(remetente, resolucaoTelaAtualRef.current);
     });
   }
 
@@ -407,12 +392,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         if (track.kind === 'video') {
           const transceiver = pc.getTransceivers().find((t) => t.sender === remetente);
           preferirH264(transceiver);
-          const parametros = remetente.getParameters();
-          parametros.encodings = [
-            { maxBitrate: bitratePorEspectador(resolucaoTelaAtualRef.current) },
-          ];
-          parametros.degradationPreference = 'maintain-resolution';
-          remetente.setParameters(parametros).catch(() => {});
+          aplicarQualidadeVideo(remetente, resolucaoTelaAtualRef.current);
         }
       });
       // O áudio "só desse app" (captura por processo) NÃO faz parte do
@@ -715,8 +695,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   async function iniciarCompartilhamento(config) {
     try {
       setErroCompartilhamento('');
-      const res = config?.resolucao || resolucaoTela;
-      const fps = config?.fps || Number(fpsTela);
+      avisouFalhaQualidadeRef.current = false;
+      const qualidade = resolveStreamQuality({
+        ...config,
+        resolution: config?.resolution ?? config?.resolucao ?? resolucaoTela,
+        fps: config?.fps ?? Number(fpsTela),
+      });
+      const res = qualidade.resolution;
+      const fps = qualidade.fps;
       const dimensoes = res === '1080p'
         ? { largura: 1920, altura: 1080 }
         : { largura: 1280, altura: 720 };
@@ -733,7 +719,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       // casos quem manda o áudio de verdade é o pipeline por processo,
       // não o getDisplayMedia.
       const usarAudioPorApp = !!config?.capturarAudioApp && !!config?.tituloJanela;
-      const usarAudioIgnorandoApp = !!config?.ignorarProcessoAudio;
+      const usarAudioIgnorandoApp = Boolean(config?.ignorarProcessoAudio || config?.ignoreDiscordAudio);
 
       const stream = usarCapturaCompativel
         ? await navigator.mediaDevices.getUserMedia({
@@ -752,12 +738,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           },
         })
         : await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            width: { ideal: dimensoes.largura, max: dimensoes.largura },
-            height: { ideal: dimensoes.altura, max: dimensoes.altura },
-            frameRate: { ideal: fps, max: fps },
-          },
-          audio: !usarAudioPorApp && !usarAudioIgnorandoApp,
+          video: getCaptureConstraints(qualidade).video,
+          audio: Boolean(qualidade.shareAudio && !usarAudioPorApp && !usarAudioIgnorandoApp),
         });
 
       const videoTrack = stream.getVideoTracks()[0];
@@ -768,11 +750,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       // é exatamente o motivo da imagem borrar quando o jogo se move
       // rápido: o encoder estava gastando bits tentando preservar
       // detalhe estático em vez de acompanhar o movimento.
-      videoTrack.contentHint = 'motion';
+      videoTrack.contentHint = qualidade.contentType;
       videoTrack.onended = () => pararCompartilhamento();
 
       telaLocalRef.current = stream;
       resolucaoTelaAtualRef.current = res;
+      qualidadeTelaAtualRef.current = qualidade;
+      setResolucaoTela(res);
+      setFpsTela(String(fps));
       setCompartilhandoTela(true);
       tocarEfeito('transmitir');
 
@@ -816,18 +801,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         const transceiver = pc.getTransceivers().find((t) => t.sender === remetente);
         preferirH264(transceiver);
 
-        const parametros = remetente.getParameters();
-        parametros.encodings = [
-          {
-            maxBitrate: bitratePorEspectador(res),
-            maxFramerate: fps,
-            scaleResolutionDownBy: escala,
-          },
-        ];
         // Se a conexão apertar, prefere cair o FPS a perder nitidez de
         // resolução — pra manter a imagem legível mesmo com engasgo.
-        parametros.degradationPreference = 'maintain-resolution';
-        remetente.setParameters(parametros).catch(() => {});
+        aplicarQualidadeVideo(remetente, res, { fps, escala });
 
         // Áudio do sistema (jogo, música, etc.) — vai como uma segunda
         // faixa de áudio, separada da sua voz no microfone.

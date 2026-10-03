@@ -10,6 +10,29 @@ class FakeStream {
   addTrack(track) { this.tracks.push(track); }
 }
 
+test('screen capture: default profile requests full HD at 60 fps with detail hint', async () => {
+  const videoTrack = { kind: 'video', contentHint: '', stop() {} };
+  const options = [];
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { mediaDevices: { getDisplayMedia: async (value) => { options.push(value); return new FakeStream([videoTrack]); } } },
+  });
+  try {
+    const stream = await requestScreenCapture();
+    assert.deepEqual(options[0].video, {
+      width: { ideal: 1920, max: 1920 },
+      height: { ideal: 1080, max: 1080 },
+      frameRate: { ideal: 60, max: 60 },
+    });
+    assert.equal(videoTrack.contentHint, 'detail');
+    await stopScreenCapture(stream);
+  } finally {
+    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
 test('screen capture: applies selected source and excludes Discord audio on Electron', async () => {
   const videoTrack = { kind: 'video', stop() { this.stopped = true; } };
   const filteredAudio = { kind: 'audio', stop() { this.stopped = true; } };

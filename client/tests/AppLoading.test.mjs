@@ -27,7 +27,13 @@ function pluginDeStubs() {
     },
     load(id) {
       if (id === '\0socket.io-client-test-stub') {
-        return `export const io = () => ({ on() {}, off() {}, once() {}, emit() {}, disconnect() {} });`;
+        return `export const io = () => ({ connected: true, on() {}, off() {}, once() {}, disconnect() {},
+          emit(evento, dados, callback) {
+            if (evento === 'salas:entrar' && dados?.accessCode === 'ABCD2345' && !dados.roomId) {
+              callback({ ok: true, room: { id: 'room-from-code', name: 'Sala pelo código', visibility: 'private' },
+                role: 'viewer', hostSocketId: 'host-1', peerSocketIds: ['host-1'] });
+            } else if (typeof callback === 'function') callback({ ok: false, error: 'Solicitação de sala inesperada.' });
+          } });`;
       }
       if (!id.startsWith('\0componente-test-stub:')) return null;
       const nome = id.slice('\0componente-test-stub:'.length);
@@ -49,13 +55,23 @@ function pluginDeStubs() {
       if (nome === 'RoomLobby') {
         return `import React from 'react';
           export default function RoomLobby(props) {
-            return React.createElement('main', { 'data-room-lobby': 'true', 'data-room-user': props.usuario?.nome || 'Visitante' });
+            return React.createElement('main', { 'data-room-lobby': 'true', 'data-room-user': props.usuario?.nome || 'Visitante' },
+              React.createElement('button', { type: 'button', 'data-enter-private-room': 'true',
+                onClick: () => props.onEntrar({ accessCode: 'ABCD2345' }) }, 'Entrar com código'));
           }`;
       }
       if (nome === 'StreamRoom') {
         return `import React from 'react';
           export default function StreamRoom(props) {
-            return React.createElement('main', { 'data-stream-room': props.roomId, 'data-stream-role': props.role });
+            return React.createElement('main', { 'data-stream-room': props.roomId, 'data-stream-role': props.role,
+              'data-stream-joined': String(Boolean(props.joinedInitially)) },
+              React.createElement('button', { type: 'button', 'data-request-share': 'true', onClick: props.onRequestShare }, 'Compartilhar tela'));
+          }`;
+      }
+      if (nome === 'ScreenShareSourcePicker') {
+        return `import React from 'react';
+          export default function ScreenShareSourcePicker() {
+            return React.createElement('div', { 'data-screen-share-picker': 'true' });
           }`;
       }
       return `export default function ${nome}() { return null; }`;
@@ -70,6 +86,7 @@ before(async () => {
     plugins: [pluginDeStubs()],
     server: { middlewareMode: true, hmr: false, ws: false },
     optimizeDeps: { noDiscovery: true, include: [] },
+    ssr: { noExternal: ['socket.io-client'] },
     appType: 'custom',
   });
   ({ default: App } = await vite.ssrLoadModule('/src/App.jsx'));
@@ -109,7 +126,7 @@ function prepararAplicacao({ comSessao = true, busca = '' } = {}) {
   };
   globalThis.localStorage = armazenamento;
   globalThis.window = new EventTarget();
-  globalThis.window.location = { search: busca };
+  globalThis.window.location = { search: busca, href: 'https://astralis.test/' };
   globalThis.window.history = { replaceState() {} };
   globalThis.window.electronAPI = undefined;
   chamadasFetch = [];
@@ -179,6 +196,28 @@ test('abre uma sala por link no navegador sem exigir uma sessão', async () => {
   const streamRoom = raiz.root.findByProps({ 'data-stream-room': 'room-public' });
   assert.equal(streamRoom.props['data-stream-role'], 'viewer');
   assert.equal(chamadasFetch.length, 0);
+});
+
+test('espectador sem conta consegue abrir o seletor para compartilhar tela', async () => {
+  prepararAplicacao({ comSessao: false, busca: '?room=room-public' });
+  await renderizar();
+  await act(async () => raiz.root.findByProps({ 'data-request-share': 'true' }).props.onClick());
+  assert.equal(raiz.root.findAllByProps({ 'data-screen-share-picker': 'true' }).length, 1);
+});
+
+test('entra na sala privada pelo código e reutiliza a entrada confirmada pelo servidor', async () => {
+  prepararAplicacao({ comSessao: false });
+  await renderizar();
+
+  let entrada;
+  await act(async () => {
+    entrada = await raiz.root.findByProps({ 'data-enter-private-room': 'true' }).props.onClick();
+  });
+
+  assert.deepEqual(entrada, { ok: true });
+  const streamRoom = raiz.root.findByProps({ 'data-stream-room': 'room-from-code' });
+  assert.equal(streamRoom.props['data-stream-role'], 'viewer');
+  assert.equal(streamRoom.props['data-stream-joined'], 'true');
 });
 
 test('sessão salva é descartada quando a API de servidores retorna 401', async () => {

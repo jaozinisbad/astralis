@@ -143,16 +143,30 @@ test('submete nome e visibilidade escolhidos ao callback de criação', async ()
   assert.deepEqual(criar, [{ name: 'Sessão cooperativa', visibility: 'private' }]);
 });
 
-test('abre o modal de acesso privado e encaminha id e código ao callback de entrada', async () => {
+test('abre o modal privado e permite entrar usando somente o código', async () => {
   const entradas = [];
   const { renderer } = await montar({ onEntrar: async (dados) => { entradas.push(dados); return { ok: true }; } });
 
   await act(async () => botao(renderer, 'Entrar com código').props.onClick());
-  assert.ok(renderer.root.findByProps({ role: 'dialog' }));
+  const dialogo = renderer.root.findByProps({ role: 'dialog' });
+  assert.equal(renderer.root.findAllByProps({ 'aria-label': 'ID da sala privada' }).length, 0);
 
   await act(async () => {
-    renderer.root.findByProps({ 'aria-label': 'ID da sala privada' }).props.onChange({ target: { value: 'room-private' } });
+    renderer.root.findByProps({ 'aria-label': 'Código de acesso' }).props.onChange({ target: { value: 'ABCD2345' } });
   });
+  await act(async () => {
+    dialogo.findByType('form').props.onSubmit({ preventDefault() {} });
+  });
+
+  assert.deepEqual(entradas, [{ accessCode: 'ABCD2345' }]);
+});
+
+test('mantém o código digitado e mostra o erro quando a sala não é encontrada', async () => {
+  const { renderer } = await montar({
+    onEntrar: async () => ({ ok: false, error: 'Código inválido ou sala encerrada.' }),
+  });
+
+  await act(async () => botao(renderer, 'Entrar com código').props.onClick());
   await act(async () => {
     renderer.root.findByProps({ 'aria-label': 'Código de acesso' }).props.onChange({ target: { value: 'ABCD2345' } });
   });
@@ -160,7 +174,9 @@ test('abre o modal de acesso privado e encaminha id e código ao callback de ent
     renderer.root.findByProps({ role: 'dialog' }).findByType('form').props.onSubmit({ preventDefault() {} });
   });
 
-  assert.deepEqual(entradas, [{ roomId: 'room-private', accessCode: 'ABCD2345' }]);
+  assert.ok(renderer.root.findByProps({ role: 'dialog' }));
+  assert.equal(renderer.root.findByProps({ 'aria-label': 'Código de acesso' }).props.value, 'ABCD2345');
+  assert.match(texto(renderer), /Código inválido ou sala encerrada\./);
 });
 
 test('entra em sala pública sem pedir código privado', async () => {
