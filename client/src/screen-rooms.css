@@ -130,8 +130,19 @@
 }
 
 .stream-stage > video { width: 100%; height: 100%; max-height: calc(100dvh - 174px); object-fit: contain; background: #03050a; }
-.stream-audio-toggle { position: absolute; right: 14px; bottom: 14px; min-height: 37px; padding: 0 12px; border: 1px solid rgba(211, 217, 242, .2); border-radius: 9px; color: #f2f2fc; background: rgba(11, 13, 22, .82); backdrop-filter: blur(12px); cursor: pointer; font-size: 11px; font-weight: 700; }
-.stream-audio-toggle:hover { border-color: rgba(165, 150, 255, .55); background: rgba(22, 23, 38, .92); }
+.stream-player-controls { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; align-items: center; gap: 7px; padding: 5px 7px 5px 12px; border: 1px solid rgba(255, 255, 255, .08); border-radius: 10px; background: rgba(7, 9, 16, .74); box-shadow: 0 8px 24px rgba(0, 0, 0, .22); backdrop-filter: blur(14px); }
+.stream-player-volume { width: 88px; height: 24px; margin: 0 2px 0 0; accent-color: #f5f5fb; cursor: pointer; }
+.stream-player-button { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; padding: 6px; border: 0; border-radius: 7px; color: #e5e8f3; background: transparent; cursor: pointer; transition: color .16s ease, background .16s ease; }
+.stream-player-button:hover, .stream-player-button:focus-visible { color: #fff; background: rgba(255, 255, 255, .12); }
+.stream-player-button:focus-visible, .stream-player-volume:focus-visible { outline: 2px solid #a596ff; outline-offset: 2px; }
+.stream-player-button--exit:hover { color: #ffb7c2; background: rgba(228, 76, 99, .15); }
+.stream-player-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.stream-player-start { position: absolute; z-index: 2; min-height: 44px; padding: 0 18px; border: 1px solid rgba(185, 174, 255, .55); border-radius: 9px; color: #fff; background: rgba(91, 74, 179, .95); box-shadow: 0 10px 30px rgba(0, 0, 0, .3); cursor: pointer; font-size: 13px; font-weight: 750; }
+.stream-player-start:hover, .stream-player-start:focus-visible { background: #7564d7; }
+.stream-stage:fullscreen { width: 100vw; height: 100vh; border: 0; border-radius: 0; }
+.stream-stage:fullscreen > video { max-height: 100vh; }
+.stream-stage.is-pseudo-fullscreen { position: fixed; inset: 0; z-index: 100; width: 100vw; height: 100dvh; min-height: 100dvh; border: 0; border-radius: 0; }
+.stream-stage.is-pseudo-fullscreen > video { max-height: 100dvh; }
 .stream-stage-empty { width: min(100%, 420px); display: flex; flex-direction: column; align-items: center; padding: 32px 20px; text-align: center; }
 .stream-stage-empty h2 { margin: 14px 0 0; color: #eceeff; font-size: 19px; letter-spacing: -.025em; }
 .stream-stage-empty p { max-width: 350px; margin: 8px 0 20px; color: #929bb2; font-size: 12px; line-height: 1.6; }
@@ -207,6 +218,10 @@ button.screen-picker-item { font-family: inherit; }
   .stream-room-code { flex-basis: 100%; padding-left: 0; }
   .stream-stage { min-height: 220px; border-radius: 12px; }
   .stream-stage > video { max-height: calc(100dvh - 190px); }
+  .stream-player-controls { top: 7px; right: 7px; gap: 1px; padding: 3px 5px 3px 8px; }
+  .stream-player-volume { width: 62px; }
+  .stream-player-button { width: 38px; height: 38px; }
+  .stream-stage:fullscreen > video { max-height: 100vh; }
   .stream-stage-empty { padding: 22px 15px; }
   .stream-stage-empty h2 { font-size: 16px; }
   .stream-stage-empty p { font-size: 11px; }
