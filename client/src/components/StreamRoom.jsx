@@ -36,9 +36,15 @@ export default function StreamRoom({
   const [copied, setCopied] = useState(false);
   const [roomClosed, setRoomClosed] = useState(false);
   const [remoteAudioMuted, setRemoteAudioMuted] = useState(true);
+  const [volume, setVolume] = useState(1);
+  const [volumeSupported, setVolumeSupported] = useState(null);
+  const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
+  const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
   const peerSessionRef = useRef(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const stageRef = useRef(null);
+  const hadRemoteStreamRef = useRef(false);
 
   useEffect(() => {
     if (!socket || !roomId || !role) return undefined;
@@ -93,6 +99,52 @@ export default function StreamRoom({
   }, [remoteStream]);
 
   useEffect(() => {
+    const video = remoteVideoRef.current;
+    if (!video || !remoteStream) return;
+    try {
+      const originalVolume = video.volume;
+      const probeVolume = originalVolume === 0.5 ? 0.25 : 0.5;
+      video.volume = probeVolume;
+      const supported = Math.abs(video.volume - probeVolume) < 0.01;
+      video.volume = originalVolume;
+      setVolumeSupported(supported);
+    } catch {
+      setVolumeSupported(false);
+    }
+    try { Promise.resolve(video.play?.()).catch(() => setPlaybackNeedsGesture(true)); }
+    catch { setPlaybackNeedsGesture(true); }
+  }, [remoteStream]);
+
+  useEffect(() => {
+    if (!remoteVideoRef.current) return;
+    if (volumeSupported) {
+      try { remoteVideoRef.current.volume = volume; }
+      catch { setVolumeSupported(false); }
+    }
+    remoteVideoRef.current.muted = remoteAudioMuted;
+  }, [remoteStream, volume, volumeSupported, remoteAudioMuted]);
+
+  useEffect(() => {
+    if (!pseudoFullscreen || typeof document === 'undefined' || !document.body) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [pseudoFullscreen]);
+
+  useEffect(() => {
+    if (remoteStream) {
+      hadRemoteStreamRef.current = true;
+      return;
+    }
+    if (!hadRemoteStreamRef.current) return;
+    hadRemoteStreamRef.current = false;
+    setPseudoFullscreen(false);
+    if (typeof document !== 'undefined' && document.fullscreenElement === stageRef.current) {
+      Promise.resolve(document.exitFullscreen?.()).catch(() => setError('Use o controle de tela cheia do navegador para sair.'));
+    }
+  }, [remoteStream]);
+
+  useEffect(() => {
     if (!socket || role !== 'host' || !joined || !roomId) return;
     emitir(socket, 'salas:ao-vivo', { roomId, isLive: Boolean(localStream) }).then((resposta) => {
       if (!resposta.ok) setError(resposta.error || 'Não foi possível atualizar a transmissão.');
@@ -136,6 +188,59 @@ export default function StreamRoom({
       await emitir(socket, 'salas:sair', {});
     }
     onExit();
+  }
+
+  function ajustarVolume(event) {
+    const nextVolume = Math.min(1, Math.max(0, Number(event.target.value) / 100));
+    setVolume(nextVolume);
+    setRemoteAudioMuted(nextVolume === 0);
+    if (nextVolume > 0) Promise.resolve(remoteVideoRef.current?.play?.()).catch(() => {});
+  }
+
+  function alternarAudio() {
+    if (remoteAudioMuted && volume === 0) setVolume(1);
+    setRemoteAudioMuted(!remoteAudioMuted);
+    if (remoteAudioMuted) Promise.resolve(remoteVideoRef.current?.play?.()).catch(() => {});
+  }
+
+  async function iniciarVideo() {
+    try {
+      await remoteVideoRef.current?.play?.();
+      setPlaybackNeedsGesture(false);
+    } catch {
+      setPlaybackNeedsGesture(true);
+      setError('Toque novamente para iniciar o vídeo neste navegador.');
+    }
+  }
+
+  async function alternarJanelaFlutuante() {
+    const video = remoteVideoRef.current;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
+      else if (video.webkitSupportsPresentationMode?.('picture-in-picture')) {
+        video.webkitSetPresentationMode(video.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+      } else if (video.requestPictureInPicture) await video.requestPictureInPicture();
+      else setError('Janela flutuante não está disponível neste navegador.');
+    } catch {
+      setError('Não foi possível abrir a janela flutuante neste navegador.');
+    }
+  }
+
+  async function alternarTelaCheia() {
+    try {
+      if (pseudoFullscreen) {
+        setPseudoFullscreen(false);
+        return;
+      }
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (stageRef.current?.requestFullscreen) {
+        try { await stageRef.current.requestFullscreen(); }
+        catch { setPseudoFullscreen(true); }
+      } else setPseudoFullscreen(true);
+    } catch {
+      setError('Não foi possível abrir a tela cheia neste navegador.');
+    }
   }
 
   if (role === 'viewer' && !joined && !roomClosed) {
@@ -192,11 +297,10 @@ export default function StreamRoom({
           {role === 'host' && (localStream
             ? <button type="button" className="rooms-danger-button" onClick={onStopShare}>Parar transmissão</button>
             : <button type="button" className="rooms-primary-button" onClick={onRequestShare}>Compartilhar tela</button>)}
-          {role === 'viewer' && <button type="button" className="rooms-secondary-button" onClick={sair}>Sair da sala</button>}
         </div>
       </header>
 
-      <section className="stream-stage" aria-label="Tela transmitida">
+      <section ref={stageRef} className={`stream-stage${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`} aria-label="Tela transmitida">
         {role === 'host' ? (
           localStream ? <video ref={localVideoRef} autoPlay muted playsInline /> : (
             <div className="stream-stage-empty">
@@ -208,21 +312,23 @@ export default function StreamRoom({
           )
         ) : remoteStream ? (
           <>
-            <video ref={remoteVideoRef} autoPlay playsInline controls muted={remoteAudioMuted} />
-            {remoteStream.getAudioTracks?.().length > 0 && (
-              <button
-                type="button"
-                className="stream-audio-toggle"
-                aria-pressed={!remoteAudioMuted}
-                onClick={() => {
-                  const nextMuted = !remoteAudioMuted;
-                  setRemoteAudioMuted(nextMuted);
-                  if (!nextMuted) remoteVideoRef.current?.play?.().catch(() => {});
-                }}
-              >
-                {remoteAudioMuted ? 'Ativar áudio da tela' : 'Silenciar áudio da tela'}
+            <video ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />
+            {playbackNeedsGesture && <button type="button" className="stream-player-start" onClick={iniciarVideo}>Iniciar vídeo</button>}
+            <div className="stream-player-controls" role="group" aria-label="Controles da transmissão">
+              {volumeSupported === true && <input type="range" className="stream-player-volume" min="0" max="100" value={Math.round(volume * 100)} onChange={ajustarVolume} aria-label="Volume da transmissão" />}
+              <button type="button" className="stream-player-button" aria-label="Silenciar áudio" aria-pressed={remoteAudioMuted} title={remoteAudioMuted ? 'Ativar áudio' : 'Silenciar áudio'} onClick={alternarAudio}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z" /><path d={remoteAudioMuted || volume === 0 ? 'M17 9l5 6m0-6-5 6' : 'M16 9a4 4 0 0 1 0 6m2-9a8 8 0 0 1 0 12'} /></svg>
               </button>
-            )}
+              <button type="button" className="stream-player-button" aria-label="Picture-in-picture" title="Janela flutuante" onClick={alternarJanelaFlutuante}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M12 12h7v5h-7z" /></svg>
+              </button>
+              <button type="button" className="stream-player-button" aria-label="Tela cheia" title="Tela cheia" onClick={alternarTelaCheia}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" /></svg>
+              </button>
+              <button type="button" className="stream-player-button stream-player-button--exit" aria-label="Parar de assistir" title="Parar de assistir" onClick={sair}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10 5.3a10.6 10.6 0 0 1 11 6.7 10.8 10.8 0 0 1-3.1 4.2M6.2 6.3A11 11 0 0 0 3 12c2.2 4.1 5.2 6 9 6 1.1 0 2.1-.2 3-.5" /><path d="M9.8 9.8a3.1 3.1 0 0 0 4.4 4.4" /></svg>
+              </button>
+            </div>
           </>
         ) : (
           <div className="stream-stage-empty" role="status" aria-live="polite">
