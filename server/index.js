@@ -13,6 +13,8 @@ const { router: amigosRoutes, compartilhamServidor } = require('./routes/amigos'
 const { socketsPorUsuario } = require('./presenca');
 const recuperacaoRoutes = require('./routes/recuperacao');
 const eventosConta = require('./eventosConta');
+const { createSocketAuthMiddleware } = require('./socketAuth');
+const { createStreamRoomManager, registerStreamRoomEvents } = require('./streamRooms');
 
 const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -26,6 +28,7 @@ const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 8e6,
 });
+const streamRoomManager = createStreamRoomManager();
 
 app.use(express.json({ limit: '8mb' }));
 
@@ -123,25 +126,15 @@ function sairDoCanalVoz(socket) {
   void avisarPresencaVoz(canalId);
 }
 
-// Exige um token válido para abrir a conexão de tempo real (chat/voz).
-io.use((socket, next) => {
-  const token = socket.handshake.auth?.token;
-  if (!token) return next(new Error('Token não fornecido.'));
-
-  jwt.verify(token, process.env.JWT_SECRET, async (err, payload) => {
-    if (err) return next(new Error('Token inválido.'));
-    try {
-      const usuario = await get('SELECT versao_sessao FROM usuarios WHERE id = ?', payload.id);
-      if (!usuario || Number(usuario.versao_sessao) !== Number(payload.versao_sessao ?? 0)) {
-        return next(new Error('Token inválido.'));
-      }
-      socket.usuario = payload;
-      next();
-    } catch (erro) {
-      next(erro);
-    }
-  });
-});
+// Visitantes sem conta só recebem eventos de salas; qualquer outra conexão
+// em tempo real continua exigindo uma sessão válida.
+io.use(createSocketAuthMiddleware({
+  verifyToken: (token, callback) => jwt.verify(token, process.env.JWT_SECRET, callback),
+  getSessionVersion: async (usuarioId) => {
+    const usuario = await get('SELECT versao_sessao FROM usuarios WHERE id = ?', usuarioId);
+    return usuario ? Number(usuario.versao_sessao) : null;
+  },
+}));
 
 const versoesRedefinidas = new Map();
 eventosConta.on('senha-redefinida', (usuarioId, versaoSessao) => {
@@ -152,6 +145,11 @@ eventosConta.on('senha-redefinida', (usuarioId, versaoSessao) => {
 });
 
 io.on('connection', (socket) => {
+  if (socket.espectadorAnonimo) {
+    registerStreamRoomEvents({ socket, io, manager: streamRoomManager });
+    return;
+  }
+
   console.log('Novo cliente conectado:', socket.usuario.nome);
 
   // Presença online: registra este socket para o usuário e avisa os
@@ -164,6 +162,8 @@ io.on('connection', (socket) => {
     socket.disconnect(true);
     return;
   }
+  registerStreamRoomEvents({ socket, io, manager: streamRoomManager });
+
   const jaEstavaOnline = socketsPorUsuario.has(socket.usuario.id);
   if (!socketsPorUsuario.has(socket.usuario.id)) socketsPorUsuario.set(socket.usuario.id, new Set());
   socketsPorUsuario.get(socket.usuario.id).add(socket.id);
@@ -333,15 +333,25 @@ io.on('connection', (socket) => {
     });
   }));
 
-  // Simples retransmissão de sinalização — o servidor não entende o
-  // conteúdo, só entrega pro destinatário certo (relay).
+  // Sinalização do fluxo legado de voz: só retransmite se os sockets ainda
+  // estiverem juntos no mesmo canal. Salas de tela usam sala:sinal:* com
+  // papéis verificados pelo gerenciador.
+  function alvoNaMesmaCall(socketId) {
+    if (typeof socketId !== 'string' || !socket.canalVozAtual) return false;
+    const alvo = io.sockets.sockets.get(socketId);
+    return Boolean(alvo && alvo.canalVozAtual === socket.canalVozAtual);
+  }
+
   socket.on('webrtc-oferta', ({ para, oferta }) => {
+    if (!alvoNaMesmaCall(para)) return;
     io.to(para).emit('webrtc-oferta', { de: socket.id, oferta });
   });
   socket.on('webrtc-resposta', ({ para, resposta }) => {
+    if (!alvoNaMesmaCall(para)) return;
     io.to(para).emit('webrtc-resposta', { de: socket.id, resposta });
   });
   socket.on('webrtc-candidato', ({ para, candidato }) => {
+    if (!alvoNaMesmaCall(para)) return;
     io.to(para).emit('webrtc-candidato', { de: socket.id, candidato });
   });
 

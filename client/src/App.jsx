@@ -15,7 +15,11 @@ import DirectMessageScreen from './components/DirectMessageScreen.jsx';
 import ServerSettingsModal from './components/ServerSettingsModal.jsx';
 import CreateChannelModal from './components/CreateChannelModal.jsx';
 import MemberSidebar from './components/MemberSidebar.jsx';
+import RoomLobby from './components/RoomLobby.jsx';
+import StreamRoom from './components/StreamRoom.jsx';
 import { SERVER_URL, apiFetch } from './api.js';
+import { requestScreenCapture, stopScreenCapture } from './screenCapture.mjs';
+import { emitirSolicitacaoSala } from './roomSocket.mjs';
 
 export default function App() {
   const [sessao, setSessao] = useState(() => {
@@ -24,6 +28,15 @@ export default function App() {
   });
   const [status, setStatus] = useState('conectando...');
   const [socket, setSocket] = useState(null);
+  const [guestLoginOpen, setGuestLoginOpen] = useState(false);
+  const [activeRoom, setActiveRoom] = useState(() => {
+    const params = new URLSearchParams(globalThis.window?.location?.search || '');
+    const roomId = params.get('room');
+    return roomId ? { roomId, role: 'viewer', joinedInitially: false, accessCode: params.get('code') || '' } : null;
+  });
+  const [screenStream, setScreenStream] = useState(null);
+  const [screenQuality, setScreenQuality] = useState(null);
+  const [captureError, setCaptureError] = useState('');
 
   const [servidores, setServidores] = useState([]);
   const [servidoresCarregando, setServidoresCarregando] = useState(() => !!sessao);
@@ -60,7 +73,7 @@ export default function App() {
   const [atualizacaoPronta, setAtualizacaoPronta] = useState(false);
 
   // view: 'servidor' | 'amigos' | 'dm'
-  const [view, setView] = useState('servidor');
+  const [view, setView] = useState('salas');
   const [amigos, setAmigos] = useState([]);
   const [dmAtiva, setDmAtiva] = useState(null); // amigo com quem está conversando
 
@@ -84,11 +97,10 @@ export default function App() {
     return () => window.removeEventListener('sessao-invalida', aoInvalidarSessao);
   }, []);
 
-  // Conecta o socket assim que há sessão.
+  // Conecta o socket para os anfitriões autenticados e espectadores sem conta.
   useEffect(() => {
-    if (!sessao) return;
     const s = io(SERVER_URL, {
-      auth: { token: sessao.token },
+      auth: sessao ? { token: sessao.token } : { modo: 'espectador' },
       // Faz o ngrok (plano grátis) pular a página de aviso de navegador.
       // Inofensivo em outros túneis/hosts, que simplesmente ignoram o header.
       extraHeaders: { 'ngrok-skip-browser-warning': 'true' },
@@ -237,6 +249,8 @@ export default function App() {
     setServidoresCarregando(true);
     setErroServidores('');
     setSessao(novaSessao);
+    setGuestLoginOpen(false);
+    setView('salas');
   }
 
   function sair() {
@@ -262,7 +276,7 @@ export default function App() {
     setModalAberto(false);
     setAmigos([]);
     setDmAtiva(null);
-    setView('servidor');
+    setView('salas');
   }
 
   async function criarServidor(nome) {
@@ -398,8 +412,82 @@ export default function App() {
   };
 
   function handleCompartilharTela(config) {
+    if (activeRoom) {
+      setCaptureError('');
+      const iniciar = async () => {
+        try {
+          const { stream: capturadoNoSeletor, ...configuracao } = config;
+          const stream = capturadoNoSeletor || await requestScreenCapture(configuracao);
+          setScreenQuality(configuracao);
+          setScreenStream(stream);
+          const videoTrack = stream.getVideoTracks()[0];
+          if (videoTrack) videoTrack.addEventListener('ended', () => {
+            setScreenStream((atual) => {
+              if (atual !== stream) return atual;
+              stopScreenCapture(stream).catch(() => {});
+              return null;
+            });
+          }, { once: true });
+          setPickerTelaAberto(false);
+        } catch (error) {
+          setCaptureError(error?.name === 'NotAllowedError' || error?.name === 'AbortError'
+            ? 'A captura foi cancelada.'
+            : 'Não foi possível iniciar a captura de tela. Confira as permissões do sistema.');
+        }
+      };
+      iniciar();
+      return;
+    }
     voiceChannelRef.current?.iniciarCompartilhamento(config);
     setPickerTelaAberto(false);
+  }
+
+  function alterarEnderecoDaSala(roomId = null) {
+    const url = new URL(window.location.href);
+    url.search = '';
+    if (roomId) url.searchParams.set('room', roomId);
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  function abrirSala({ roomId, accessCode = '' }) {
+    setActiveRoom({ roomId, role: 'viewer', accessCode, joinedInitially: false });
+    alterarEnderecoDaSala(roomId);
+  }
+
+  async function criarSala(dados) {
+    if (!socket || !sessao) {
+      setGuestLoginOpen(true);
+      return { ok: false, error: 'Entre na sua conta para criar uma sala.' };
+    }
+    const resposta = await emitirSolicitacaoSala(socket, 'salas:criar', dados);
+    if (!resposta?.ok) return resposta;
+    setActiveRoom({
+      ...resposta.room,
+      roomId: resposta.room.id,
+      role: 'host',
+      joinedInitially: true,
+      accessCode: resposta.accessCode || '',
+    });
+    setScreenStream(null);
+    setScreenQuality(null);
+    setCaptureError('');
+    alterarEnderecoDaSala(resposta.room.id);
+    return resposta;
+  }
+
+  async function pararCompartilhamentoDaSala() {
+    const atual = screenStream;
+    setScreenStream(null);
+    if (atual) await stopScreenCapture(atual);
+  }
+
+  function fecharSala() {
+    if (screenStream) stopScreenCapture(screenStream).catch(() => {});
+    setScreenStream(null);
+    setScreenQuality(null);
+    setCaptureError('');
+    setActiveRoom(null);
+    alterarEnderecoDaSala(null);
   }
 
   function selecionarServidor(id) {
@@ -419,8 +507,32 @@ export default function App() {
     setView('dm');
   }
 
+  if (!sessao && guestLoginOpen) {
+    return (
+      <div className="rooms-login-page">
+        <button type="button" className="rooms-back-button" onClick={() => setGuestLoginOpen(false)}>← Voltar às salas</button>
+        <LoginScreen onAutenticado={autenticar} />
+      </div>
+    );
+  }
+
   if (!sessao) {
-    return <LoginScreen onAutenticado={autenticar} />;
+    return (
+      <div className="app app--screen-rooms">
+        {activeRoom ? (
+          <StreamRoom socket={socket} roomId={activeRoom.roomId} role="viewer" accessCode={activeRoom.accessCode} onExit={fecharSala} />
+        ) : (
+          <RoomLobby
+            socket={socket}
+            usuario={null}
+            onEntrarNaConta={() => setGuestLoginOpen(true)}
+            onCriar={() => { setGuestLoginOpen(true); return Promise.resolve({ ok: false, error: 'Entre para criar uma sala.' }); }}
+            onEntrar={abrirSala}
+            onAbrirPerfil={() => setGuestLoginOpen(true)}
+          />
+        )}
+      </div>
+    );
   }
 
   const servidorAtivo = servidores.find((s) => s.id === servidorAtivoId);
@@ -433,6 +545,43 @@ export default function App() {
     banner_url: sessao.usuario.banner_url,
     online: true,
   };
+
+  if (view === 'salas') {
+    return (
+      <div className="app app--screen-rooms">
+        {activeRoom ? (
+          <>
+            <StreamRoom
+              socket={socket}
+              roomId={activeRoom.roomId}
+              role={activeRoom.role}
+              room={activeRoom}
+              accessCode={activeRoom.accessCode}
+              joinedInitially={activeRoom.joinedInitially}
+              localStream={screenStream}
+              quality={screenQuality || undefined}
+              onRequestShare={() => setPickerTelaAberto(true)}
+              onStopShare={pararCompartilhamentoDaSala}
+              onExit={fecharSala}
+            />
+            {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
+          </>
+        ) : (
+          <RoomLobby
+            socket={socket}
+            usuario={usuarioLogado}
+            onCriar={criarSala}
+            onEntrar={abrirSala}
+            onAbrirPerfil={() => setPerfilAberto(true)}
+          />
+        )}
+        {perfilAberto && <ProfileModal usuario={sessao.usuario} onFechar={() => setPerfilAberto(false)} onSalvar={salvarPerfil} />}
+        {pickerTelaAberto && (
+          <ScreenShareSourcePicker onFechar={() => setPickerTelaAberto(false)} onSelecionar={handleCompartilharTela} />
+        )}
+      </div>
+    );
+  }
 
   // Junta as permissões de todos os cargos que o usuário logado tem
   // nesse servidor (o dono não precisa disso — sempre pode tudo).

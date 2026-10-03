@@ -1,143 +1,153 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { DEFAULT_STREAM_QUALITY, STREAM_QUALITY_OPTIONS } from '../streamQuality.mjs';
+import { requestScreenCapture } from '../screenCapture.mjs';
 
-/**
- * Modal para seleção de fonte de compartilhamento de tela (Electron)
- * - Lista telas, janelas
- * - Escolhe resolução (720p/1080p) e FPS (30/60)
- */
+const LABEL_BITRATE = new Map([
+  [700_000, 'Baixo · ~700 Kbps'], [2_000_000, 'Médio · ~2 Mbps'],
+  [4_000_000, 'Alto · ~4 Mbps'], [8_000_000, 'Ultra · ~8 Mbps'],
+]);
+
 export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
-  const [fontes, setFontes] = useState([]); // [{id, name, thumbnail, tipo}]
-  // Fixado em 720p por enquanto — foco é deixar essa resolução impecável
-  // antes de reabrir 1080p como opção.
-  const resolucao = '720p';
-  const [fps, setFps] = useState('60');
-  const [selecionada, setSelecionada] = useState(null);
-  const [capturarAudioApp, setCapturarAudioApp] = useState(false);
-  const [ignorarAudioDiscord, setIgnorarAudioDiscord] = useState(false);
-  const [capturaCompativel, setCapturaCompativel] = useState(true);
-  const [carregando, setCarregando] = useState(true);
+  const electronAPI = window.electronAPI;
+  const hasNativeSources = Boolean(electronAPI?.listarFontesCompartilhamento);
+  const [fontes, setFontes] = useState([]);
+  const [selecionada, setSelecionada] = useState('');
+  const [quality, setQuality] = useState(DEFAULT_STREAM_QUALITY);
+  const [carregando, setCarregando] = useState(hasNativeSources);
   const [erro, setErro] = useState('');
+  const [compartilhando, setCompartilhando] = useState(false);
 
   useEffect(() => {
+    let ativo = true;
     async function carregarFontes() {
+      if (!hasNativeSources) {
+        setFontes([{ id: 'browser-display', name: 'Tela ou janela', tipo: 'browser' }]);
+        setSelecionada('browser-display');
+        return;
+      }
       try {
-        if (window.electronAPI?.listarFontesCompartilhamento) {
-          const lista = await window.electronAPI.listarFontesCompartilhamento();
-          setFontes(lista);
-          if (lista.length > 0) setSelecionada(lista[0].id);
-        } else {
-          // Sem Electron, usa getDisplayMedia padrão
-          setErro('Use o navegador ou Electron para compartilhar tela');
-        }
-      } catch (e) {
-        setErro(`Erro ao listar telas: ${e.message}`);
+        const lista = await electronAPI.listarFontesCompartilhamento();
+        if (!ativo) return;
+        setFontes(lista);
+        if (lista.length) setSelecionada(lista[0].id);
+      } catch (error) {
+        if (ativo) setErro(`Não consegui listar as telas: ${error.message}`);
       } finally {
-        setCarregando(false);
+        if (ativo) setCarregando(false);
       }
     }
     carregarFontes();
-  }, []);
+    return () => { ativo = false; };
+  }, [electronAPI, hasNativeSources]);
 
-  function confirmar() {
-    if (!selecionada) return;
-    const fonte = fontes.find((f) => f.id === selecionada);
-    if (fonte) {
+  const fonteSelecionada = useMemo(() => fontes.find((fonte) => fonte.id === selecionada), [fontes, selecionada]);
+  const atualizar = (campo, valor) => setQuality((atual) => ({ ...atual, [campo]: valor }));
+
+  async function confirmar() {
+    if (!fonteSelecionada) return;
+    setErro('');
+    if (fonteSelecionada.tipo !== 'browser') {
       onSelecionar({
-        fonteId: fonte.id,
-        resolucao,
-        fps: parseInt(fps),
-        // Só faz sentido pedir áudio isolado de um app quando a fonte
-        // escolhida É um app (janela), não uma tela inteira.
-        capturarAudioApp: fonte.tipo === 'janela' && capturarAudioApp,
-        modoCaptura: fonte.tipo === 'janela' && capturaCompativel ? 'compatibilidade' : 'padrao',
-        tituloJanela: fonte.name,
-        // O inverso: só faz sentido "ignorar o Discord" quando a fonte
-        // é a tela inteira — se já é uma janela específica, o Discord
-        // naturalmente já não está sendo capturado.
-        ignorarProcessoAudio: fonte.tipo === 'tela' && ignorarAudioDiscord,
-        nomeProcessoIgnorado: 'Discord.exe',
+        ...quality,
+        fonteId: fonteSelecionada.id,
+        modoCaptura: fonteSelecionada.tipo === 'janela' ? 'compatibilidade' : 'padrao',
       });
+      return;
+    }
+
+    setCompartilhando(true);
+    try {
+      const stream = await requestScreenCapture(quality, null);
+      onSelecionar({ ...quality, stream });
+    } catch (error) {
+      setErro(error?.name === 'NotAllowedError' || error?.name === 'AbortError'
+        ? 'A captura foi cancelada. Você pode escolher uma tela quando estiver pronto.'
+        : 'Não consegui iniciar a captura. Verifique se este navegador permite compartilhar tela.');
+      setCompartilhando(false);
     }
   }
 
   return (
-    <div className="modal-overlay" onClick={onFechar}>
-      <div className="modal screen-picker-modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Qual tela você deseja compartilhar?</h2>
+    <div className="modal-overlay screen-picker-overlay" onClick={onFechar}>
+      <section className="modal screen-picker-modal screen-picker-modal--rooms" role="dialog" aria-modal="true" aria-labelledby="screen-picker-title" onClick={(event) => event.stopPropagation()}>
+        <header className="screen-picker-heading">
+          <div>
+            <p className="rooms-eyebrow">ASTRALIS · COMPARTILHAR</p>
+            <h2 id="screen-picker-title">O que você quer transmitir?</h2>
+            <p>Apenas a tela e o áudio escolhido. Microfone e conversa ficam no Discord.</p>
+          </div>
+          <button type="button" className="screen-picker-close" onClick={onFechar} aria-label="Fechar seletor">×</button>
+        </header>
 
-        {carregando ? (
-          <p>Carregando telas...</p>
-        ) : erro ? (
-          <p style={{ color: 'red' }}>{erro}</p>
+        {carregando ? <p className="screen-picker-loading">Buscando telas disponíveis…</p> : erro && !fontes.length ? (
+          <p className="rooms-error" role="alert">{erro}</p>
         ) : (
-          <>
-            <div className="screen-picker-grid">
+          <div className="screen-picker-content">
+            <div className="screen-picker-grid" aria-label="Fontes de tela">
               {fontes.map((fonte) => (
-                <div
-                  key={fonte.id}
-                  className={`screen-picker-item ${selecionada === fonte.id ? 'selecionada' : ''}`}
-                  onClick={() => setSelecionada(fonte.id)}
-                >
-                  {fonte.thumbnail && (
-                    <img src={fonte.thumbnail} alt={fonte.name} className="screen-picker-thumb" />
-                  )}
-                  <p className="screen-picker-label">{fonte.name}</p>
-                </div>
+                <button type="button" key={fonte.id} className={`screen-picker-item ${selecionada === fonte.id ? 'selecionada' : ''}`} onClick={() => setSelecionada(fonte.id)} aria-pressed={selecionada === fonte.id}>
+                  {fonte.thumbnail ? <img src={fonte.thumbnail} alt="" className="screen-picker-thumb" /> : <span className="screen-picker-browser-icon" aria-hidden="true">▣</span>}
+                  <span className="screen-picker-label">{fonte.name}</span>
+                  {fonte.tipo === 'browser' && <small>O navegador vai mostrar a lista de telas</small>}
+                </button>
               ))}
             </div>
 
-            {fontes.find((f) => f.id === selecionada)?.tipo === 'janela' && (
-              <label className="screen-picker-audio-app">
-                <input
-                  type="checkbox"
-                  checked={capturarAudioApp}
-                  onChange={(e) => setCapturarAudioApp(e.target.checked)}
-                />
-                🎯 Capturar só o áudio desse app (experimental, Windows) — em vez do som do
-                sistema inteiro
+            <div className="screen-quality-card">
+              <label className="screen-quality-adaptive">
+                <input type="checkbox" checked={quality.adaptiveQuality} onChange={(event) => atualizar('adaptiveQuality', event.target.checked)} />
+                <span><strong>Qualidade inteligente</strong><small>Divide o bitrate entre espectadores para poupar seu upload; a resolução e os quadros ficam limitados pelas opções abaixo.</small></span>
               </label>
-            )}
-
-            {fontes.find((f) => f.id === selecionada)?.tipo === 'janela' && (
-              <label className="screen-picker-audio-app">
-                <input type="checkbox" checked={capturaCompativel} onChange={(e) => setCapturaCompativel(e.target.checked)} />
-                Usar captura compatível para janela/jogo (recomendada no Windows 10; evita a borda amarela quando suportada)
+              <fieldset className="screen-content-type">
+                <legend>O que você está compartilhando</legend>
+                <label className={quality.contentType === 'detail' ? 'selected' : ''}>
+                  <input type="radio" name="screen-content-type" value="detail" checked={quality.contentType === 'detail'} onChange={() => atualizar('contentType', 'detail')} />
+                  <span><strong>Texto / código</strong><small>Prioriza nitidez</small></span>
+                </label>
+                <label className={quality.contentType === 'motion' ? 'selected' : ''}>
+                  <input type="radio" name="screen-content-type" value="motion" checked={quality.contentType === 'motion'} onChange={() => atualizar('contentType', 'motion')} />
+                  <span><strong>Vídeo / jogo</strong><small>Prioriza fluidez</small></span>
+                </label>
+              </fieldset>
+              <div className="screen-quality-selects">
+                <label>Resolução
+                  <select value={quality.resolution} onChange={(event) => atualizar('resolution', event.target.value)}>
+                    {STREAM_QUALITY_OPTIONS.resolutions.map((value) => <option key={value} value={value}>{value === '1080p' ? 'Full HD (1080p)' : value}</option>)}
+                  </select>
+                </label>
+                <label>Taxa de quadros
+                  <select value={quality.fps} onChange={(event) => atualizar('fps', Number(event.target.value))}>
+                    {STREAM_QUALITY_OPTIONS.fps.map((value) => <option key={value} value={value}>{value} fps</option>)}
+                  </select>
+                </label>
+                <label>Bitrate máximo
+                  <select value={quality.bitrate} onChange={(event) => atualizar('bitrate', Number(event.target.value))}>
+                    {STREAM_QUALITY_OPTIONS.bitrates.map((value) => <option key={value} value={value}>{LABEL_BITRATE.get(value)}</option>)}
+                  </select>
+                </label>
+              </div>
+              <label className="screen-quality-audio">
+                <input type="checkbox" checked={quality.shareAudio} onChange={(event) => atualizar('shareAudio', event.target.checked)} />
+                Compartilhar o áudio da tela
               </label>
-            )}
-
-            {fontes.find((f) => f.id === selecionada)?.tipo === 'tela' && (
-              <label className="screen-picker-audio-app">
-                <input
-                  type="checkbox"
-                  checked={ignorarAudioDiscord}
-                  onChange={(e) => setIgnorarAudioDiscord(e.target.checked)}
-                />
-                Ignorar o Discord no áudio (experimental, Windows) — evita o eco de quem
-                está na call ouvir a própria voz de volta
-              </label>
-            )}
-
-            <div className="screen-picker-options">
-              <label>
-                FPS:
-                <select value={fps} onChange={(e) => setFps(e.target.value)}>
-                  <option value="30">30 FPS</option>
-                  <option value="60">60 FPS</option>
-                </select>
-              </label>
+              {hasNativeSources && fonteSelecionada?.tipo === 'tela' && (
+                <label className="screen-quality-audio screen-quality-audio--advanced">
+                  <input type="checkbox" checked={quality.ignoreDiscordAudio} onChange={(event) => atualizar('ignoreDiscordAudio', event.target.checked)} />
+                  Não enviar o áudio do Discord aos espectadores <small>Experimental · Windows</small>
+                </label>
+              )}
             </div>
-
-            <div className="screen-picker-acoes">
-              <button type="button" onClick={onFechar} className="btn-secundario">
-                Cancelar
-              </button>
-              <button type="button" onClick={confirmar} className="btn-primario" disabled={!selecionada}>
-                Compartilhar
-              </button>
-            </div>
-          </>
+          </div>
         )}
-      </div>
+
+        {erro && <p className="rooms-error screen-picker-error" role="alert">{erro}</p>}
+        <footer className="screen-picker-actions">
+          <button type="button" className="rooms-secondary-button" onClick={onFechar}>Cancelar</button>
+          <button type="button" className="rooms-primary-button" disabled={!fonteSelecionada || carregando || compartilhando} onClick={confirmar}>
+            {compartilhando ? 'Aguardando permissão…' : 'Compartilhar'}
+          </button>
+        </footer>
+      </section>
     </div>
   );
 }
