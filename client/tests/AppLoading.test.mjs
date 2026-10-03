@@ -46,6 +46,18 @@ function pluginDeStubs() {
               'data-channels': JSON.stringify(props.canais) });
           }`;
       }
+      if (nome === 'RoomLobby') {
+        return `import React from 'react';
+          export default function RoomLobby(props) {
+            return React.createElement('main', { 'data-room-lobby': 'true', 'data-room-user': props.usuario?.nome || 'Visitante' });
+          }`;
+      }
+      if (nome === 'StreamRoom') {
+        return `import React from 'react';
+          export default function StreamRoom(props) {
+            return React.createElement('main', { 'data-stream-room': props.roomId, 'data-stream-role': props.role });
+          }`;
+      }
       return `export default function ${nome}() { return null; }`;
     },
   };
@@ -84,19 +96,21 @@ function respostaAdiada() {
   return { promise, resolve, reject };
 }
 
-function prepararAplicacao() {
+function prepararAplicacao({ comSessao = true, busca = '' } = {}) {
   const fila = new Map();
   const sessao = JSON.stringify({
     token: 'token-teste',
     usuario: { id: 'user-1', nome: 'Jogador', status: 'online' },
   });
   const armazenamento = {
-    getItem: (chave) => chave === 'sessao' ? sessao : null,
+    getItem: (chave) => chave === 'sessao' && comSessao ? sessao : null,
     setItem() {},
     removeItem() {},
   };
   globalThis.localStorage = armazenamento;
   globalThis.window = new EventTarget();
+  globalThis.window.location = { search: busca };
+  globalThis.window.history = { replaceState() {} };
   globalThis.window.electronAPI = undefined;
   chamadasFetch = [];
   globalThis.fetch = (url) => {
@@ -142,60 +156,35 @@ function textoDaArvore() {
     .join(' ');
 }
 
-test('mostra carregamento enquanto busca servidores da sessão salva', async () => {
-  const api = prepararAplicacao();
+test('abre o lobby de salas enquanto carrega dados auxiliares da sessão', async () => {
+  prepararAplicacao();
   await renderizar();
 
   assert.ok(chamadasFetch.includes('/api/servidores'));
-  assert.match(textoDaArvore(), /Carregando seus servidores/);
-  assert.doesNotMatch(textoDaArvore(), /Nenhum servidor/);
+  assert.equal(raiz.root.findByProps({ 'data-room-lobby': 'true' }).props['data-room-user'], 'Jogador');
+  assert.equal(raiz.root.findAllByType('nav').length, 0);
 });
 
-test('permite tentar novamente após falha e apresenta os servidores no sucesso', async () => {
+test('mantém o lobby acessível se a lista antiga de servidores falhar', async () => {
   const api = prepararAplicacao();
   await renderizar();
   await act(async () => api.rejeitar('/api/servidores', 503, 'Servidor indisponível'));
-  assert.match(textoDaArvore(), /Servidor indisponível/);
-
-  await act(async () => {
-    raiz.root.findAllByType('button').find((button) => button.children.join('') === 'Tentar novamente').props.onClick();
-  });
-  assert.equal(chamadasFetch.filter((caminho) => caminho === '/api/servidores').length, 2);
-  assert.match(textoDaArvore(), /Carregando seus servidores/);
-
-  await act(async () => api.resolver('/api/servidores', [{ id: 'alpha', nome: 'Alpha', papel: 'dono' }]));
-  assert.ok(raiz.root.findAllByProps({ 'data-select-server': 'alpha' }).length === 1);
+  assert.equal(raiz.root.findAllByProps({ 'data-room-lobby': 'true' }).length, 1);
+  assert.equal(raiz.root.findAllByType('nav').length, 0);
 });
 
-test('descarta resposta de canais de um servidor que deixou de estar ativo', async () => {
-  const api = prepararAplicacao();
+test('abre uma sala por link no navegador sem exigir uma sessão', async () => {
+  prepararAplicacao({ comSessao: false, busca: '?room=room-public' });
   await renderizar();
-  await act(async () => api.resolver('/api/servidores', [
-    { id: 'alpha', nome: 'Alpha', papel: 'dono' },
-    { id: 'beta', nome: 'Beta', papel: 'dono' },
-  ]));
-
-  const respostaAlpha = api.buscar('/api/servidores/alpha/canais');
-  await act(async () => {
-    raiz.root.findByProps({ 'data-select-server': 'beta' }).props.onClick();
-    await Promise.resolve();
-  });
-  await act(async () => api.resolver('/api/servidores/beta/canais', [{ id: 'beta-channel', nome: 'Canal Beta', tipo: 'texto' }]));
-  await act(async () => {
-    respostaAlpha.resolve({ ok: true, status: 200, json: async () => [{ id: 'alpha-channel', nome: 'Canal Alpha', tipo: 'texto' }] });
-    await Promise.resolve();
-  });
-
-  const sidebar = raiz.root.findByType('aside');
-  assert.equal(sidebar.props['data-channel-server'], 'Beta');
-  assert.deepEqual(JSON.parse(sidebar.props['data-channels']), [
-    { id: 'beta-channel', nome: 'Canal Beta', tipo: 'texto' },
-  ]);
+  const streamRoom = raiz.root.findByProps({ 'data-stream-room': 'room-public' });
+  assert.equal(streamRoom.props['data-stream-role'], 'viewer');
+  assert.equal(chamadasFetch.length, 0);
 });
 
 test('sessão salva é descartada quando a API de servidores retorna 401', async () => {
   const api = prepararAplicacao();
   await renderizar();
   await act(async () => api.rejeitar('/api/servidores', 401, 'Sessão expirada'));
+  assert.equal(raiz.root.findAllByProps({ 'data-room-lobby': 'true' }).length, 1);
   assert.ok(raiz.root.findAllByType('nav').length === 0);
 });

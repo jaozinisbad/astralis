@@ -115,6 +115,24 @@ export default function LoginScreen({ onAutenticado }) {
       <div className="auth-glow auth-glow--one" aria-hidden="true" />
       <div className="auth-glow auth-glow--two" aria-hidden="true" />
 
+      <div className="auth-layout">
+        <aside className="auth-story" aria-label="Sobre o Astralis">
+          <div className="auth-brand">
+            <img className="auth-brand__mark" src="./astralis-mark.svg" alt="" />
+            <span>ASTRALIS</span>
+          </div>
+          <div className="auth-story__copy">
+            <span className="auth-eyebrow"><span aria-hidden="true" /> SUA TELA, SUA SALA</span>
+            <h2>Transmita sua tela. <span>Compartilhe o momento.</span></h2>
+            <p>Crie uma sala para transmitir. Quem estiver no celular acompanha pelo navegador.</p>
+            <div className="auth-highlights" aria-label="Recursos do Astralis">
+              <span>Salas ao vivo</span>
+              <span>Convites privados</span>
+              <span>Transmissão de tela</span>
+            </div>
+          </div>
+        </aside>
+
       <section className="auth-card" aria-labelledby="auth-form-title">
         <div className="auth-brand">
           <img className="auth-brand__mark" src="./astralis-mark.svg" alt="" />
@@ -207,6 +225,7 @@ export default function LoginScreen({ onAutenticado }) {
           </div>
         </>}
       </section>
+      </div>
     </main>
   );
 }
