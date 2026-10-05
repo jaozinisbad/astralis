@@ -9,11 +9,16 @@ export function createStreamRoomPeerSession({
   quality = {},
   onRemoteStream = () => {},
   onQualityError = () => {},
+  onPeerConnectionFailed = () => {},
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
+  reconnectDelayMs = 1_500,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
 }) {
   const peers = new Map();
   const connecting = new Map();
   const candidatesWaitingForDescription = new Map();
+  const reconnectTimers = new Map();
   const viewers = new Set();
   let localStream = null;
   let currentQuality = quality;
@@ -34,6 +39,31 @@ export function createStreamRoomPeerSession({
     });
   }
 
+  function clearReconnectTimer(peerId) {
+    const timer = reconnectTimers.get(peerId);
+    if (timer !== undefined) clearTimeoutImpl(timer);
+    reconnectTimers.delete(peerId);
+  }
+
+  function schedulePeerRecovery(peerId, peer) {
+    if (closed || reconnectTimers.has(peerId)) return;
+    const timer = setTimeoutImpl(() => {
+      reconnectTimers.delete(peerId);
+      if (closed || peers.get(peerId) !== peer
+        || !['disconnected', 'failed'].includes(peer.connectionState)) return;
+
+      if (role === 'host') {
+        closePeer(peerId, true);
+        if (localStream && viewers.has(peerId)) connectViewer(peerId).catch(() => closePeer(peerId, true));
+        return;
+      }
+
+      closePeer(peerId);
+      onPeerConnectionFailed(peerId);
+    }, reconnectDelayMs);
+    reconnectTimers.set(peerId, timer);
+  }
+
   function createPeer(peerId) {
     if (peers.has(peerId)) return peers.get(peerId);
     const peer = new RTCPeerConnectionImpl({ iceServers: ICE_SERVERS });
@@ -43,7 +73,14 @@ export function createStreamRoomPeerSession({
     };
     peer.ontrack = (event) => onRemoteStream(peerId, event.streams?.[0] || null);
     peer.onconnectionstatechange = () => {
-      if (peer.connectionState === 'failed' || peer.connectionState === 'closed') closePeer(peerId);
+      if (peer.connectionState === 'connected') {
+        clearReconnectTimer(peerId);
+      } else if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed') {
+        schedulePeerRecovery(peerId, peer);
+      } else if (peer.connectionState === 'closed') {
+        clearReconnectTimer(peerId);
+        if (peers.get(peerId) === peer) closePeer(peerId, role === 'host');
+      }
     };
     return peer;
   }
@@ -140,6 +177,7 @@ export function createStreamRoomPeerSession({
   }
 
   function closePeer(peerId, preserveViewer = false) {
+    clearReconnectTimer(peerId);
     if (!preserveViewer) viewers.delete(peerId);
     const peer = peers.get(peerId);
     if (!peer) {
@@ -160,6 +198,10 @@ export function createStreamRoomPeerSession({
   function onViewerJoined(message = {}) {
     if (message.salaId !== roomId || !message.socketId) return;
     viewers.add(message.socketId);
+    const peer = peers.get(message.socketId);
+    if (peer && ['disconnected', 'failed', 'closed'].includes(peer.connectionState)) {
+      closePeer(message.socketId, true);
+    }
     if (localStream) connectViewer(message.socketId).catch(() => closePeer(message.socketId));
   }
 
@@ -216,6 +258,8 @@ export function createStreamRoomPeerSession({
       viewers.clear();
       connecting.clear();
       candidatesWaitingForDescription.clear();
+      reconnectTimers.forEach((timer) => clearTimeoutImpl(timer));
+      reconnectTimers.clear();
       localStream = null;
     },
     getPeerCount: () => peers.size,

@@ -2,12 +2,32 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { createStreamRoomManager, registerStreamRoomEvents } = require('../streamRooms');
 
-function managerDeTeste() {
+function managerDeTeste(options = {}) {
   let id = 0;
   return createStreamRoomManager({
     makeId: () => `room-${++id}`,
     makeCode: () => 'ABCD2345',
+    ...options,
   });
+}
+
+function timersDeTeste() {
+  let id = 0;
+  const timers = new Map();
+  return {
+    timers,
+    setTimeout(callback, delay) {
+      const timerId = ++id;
+      timers.set(timerId, { callback, delay });
+      return timerId;
+    },
+    clearTimeout(timerId) { timers.delete(timerId); },
+    executar() {
+      const pendentes = [...timers.values()];
+      timers.clear();
+      pendentes.forEach(({ callback }) => callback());
+    },
+  };
 }
 
 function criarSala(manager, options = {}) {
@@ -162,6 +182,28 @@ test('screen room: entrada por código resolve internamente a sala e preserva o 
   );
   assert.equal(invalidViewer.salasSocket.size, 0);
   assert.equal(manager.getSocketRole('viewer-invalid-code', created.room.id), null);
+});
+
+test('screen room socket: repetir entrada no mesmo socket é idempotente', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  registrarSocket(host, io, manager);
+  const created = await acionar(host, 'salas:criar', { name: 'Sessão', visibility: 'public' });
+  const viewer = socketDeTeste('viewer-socket', null, true, (room, rooms) => {
+    if (rooms.has(room)) throw new Error('duplicate socket join');
+    rooms.add(room);
+  });
+  registrarSocket(viewer, io, manager);
+
+  const firstJoin = await acionar(viewer, 'salas:entrar', { roomId: created.room.id });
+  const repeatedJoin = await acionar(viewer, 'salas:entrar', { roomId: created.room.id });
+
+  assert.equal(firstJoin.ok, true);
+  assert.equal(repeatedJoin.ok, true);
+  assert.equal(repeatedJoin.role, 'viewer');
+  assert.equal(manager.getSocketRole(viewer.id, created.room.id), 'viewer');
+  assert.equal(manager.getRoom(created.room.id).viewerCount, 1);
 });
 
 test('screen room: descoberta lista apenas salas públicas ao vivo', () => {
@@ -576,8 +618,50 @@ test('screen room socket: só retransmite oferta e resposta válidas entre peers
   assert.equal(resposta.ok, true);
 });
 
-test('screen room socket: saída do anfitrião encerra sala e remove espectadores', async () => {
-  const manager = managerDeTeste();
+test('screen room socket: anfitrião se reconecta após oscilação e a transmissão é restaurada', async () => {
+  const timers = timersDeTeste();
+  const manager = managerDeTeste({
+    hostReconnectGraceMs: 15_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+  });
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const viewer = socketDeTeste('viewer-socket', null, true);
+  registrarSocket(host, io, manager);
+  const created = await acionar(host, 'salas:criar', { name: 'Sessão', visibility: 'private' });
+  registrarSocket(viewer, io, manager);
+  await acionar(viewer, 'salas:entrar', { roomId: created.room.id, accessCode: created.accessCode });
+  await acionar(host, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+
+  host.handlers.get('disconnect')();
+
+  assert.equal(manager.getRoom(created.room.id).isLive, false);
+  assert.equal(manager.getSocketRole(viewer.id, created.room.id), 'viewer');
+  assert.equal(io.enviados.some((item) => item.evento === 'sala:encerrada'), false);
+
+  const reconnectedHost = socketDeTeste('host-reconnected', { id: 1, nome: 'Anfitrião' });
+  registrarSocket(reconnectedHost, io, manager);
+  const joined = await acionar(reconnectedHost, 'salas:entrar', { roomId: created.room.id });
+
+  assert.equal(joined.ok, true);
+  assert.equal(joined.role, 'host');
+  assert.equal(joined.room.isLive, true);
+  assert.equal(joined.presenterSocketId, reconnectedHost.id);
+  assert.deepEqual(joined.peerSocketIds, [viewer.id]);
+  assert.equal(manager.getSocketRole(host.id, created.room.id), null);
+  assert.equal(timers.timers.size, 0, 'reattach cancels the room expiry timer');
+  timers.executar();
+  assert.ok(manager.getRoom(created.room.id));
+});
+
+test('screen room socket: saída definitiva do anfitrião após o prazo encerra sala e remove espectadores', async () => {
+  const timers = timersDeTeste();
+  const manager = managerDeTeste({
+    hostReconnectGraceMs: 15_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+  });
   const io = ioDeTeste();
   const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
   const viewer = socketDeTeste('viewer-socket', null, true);
@@ -587,6 +671,11 @@ test('screen room socket: saída do anfitrião encerra sala e remove espectadore
   await acionar(viewer, 'salas:entrar', { roomId: created.room.id });
 
   host.handlers.get('disconnect')();
+  assert.ok(manager.getRoom(created.room.id), 'room remains available during reconnect grace');
+  assert.equal(io.enviados.some((item) => item.evento === 'sala:encerrada'), false);
+
+  timers.executar();
+
   assert.equal(manager.getRoom(created.room.id), null);
   assert.ok(io.enviados.some((item) => item.evento === 'sala:encerrada'));
   assert.equal(viewer.salasSocket.has(`sala-${created.room.id}`), false);

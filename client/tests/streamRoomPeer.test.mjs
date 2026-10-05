@@ -94,6 +94,91 @@ test('stream peer: readiness retries a pending offer without renegotiating', asy
   session.close();
 });
 
+test('stream peer: host creates a fresh peer and offer after ICE fails', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const scheduled = [];
+  const session = createStreamRoomPeerSession({
+    socket,
+    roomId: 'room-1',
+    role: 'host',
+    RTCPeerConnectionImpl: FakePeerConnection,
+    reconnectDelayMs: 1,
+    setTimeoutImpl: (callback) => { scheduled.push(callback); return callback; },
+    clearTimeoutImpl: (timer) => { const index = scheduled.indexOf(timer); if (index >= 0) scheduled.splice(index, 1); },
+  });
+  session.setLocalStream(makeStream());
+  socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-a' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const failedPeer = FakePeerConnection.instances[0];
+  failedPeer.connectionState = 'failed';
+  failedPeer.onconnectionstatechange();
+  scheduled.shift()();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(FakePeerConnection.instances.length, 2);
+  assert.equal(FakePeerConnection.instances[0].connectionState, 'closed');
+  assert.equal(socket.sent.filter(({ event }) => event === 'sala:sinal:oferta').length, 2);
+  assert.equal(session.getPeerCount(), 1);
+  session.close();
+});
+
+test('stream peer: viewer requests a new offer after its ICE connection fails', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const scheduled = [];
+  const failedPeers = [];
+  const session = createStreamRoomPeerSession({
+    socket,
+    roomId: 'room-1',
+    role: 'viewer',
+    onPeerConnectionFailed: (peerId) => failedPeers.push(peerId),
+    RTCPeerConnectionImpl: FakePeerConnection,
+    reconnectDelayMs: 1,
+    setTimeoutImpl: (callback) => { scheduled.push(callback); return callback; },
+    clearTimeoutImpl: (timer) => { const index = scheduled.indexOf(timer); if (index >= 0) scheduled.splice(index, 1); },
+  });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', de: 'host-a', descricao: { type: 'offer', sdp: 'host-offer' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const peer = FakePeerConnection.instances[0];
+  peer.connectionState = 'disconnected';
+  peer.onconnectionstatechange();
+  scheduled.shift()();
+
+  assert.equal(peer.connectionState, 'closed');
+  assert.deepEqual(failedPeers, ['host-a']);
+  assert.equal(session.getPeerCount(), 0);
+  session.close();
+});
+
+test('stream peer: brief ICE disconnection that recovers cancels peer replacement', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const scheduled = [];
+  const session = createStreamRoomPeerSession({
+    socket,
+    roomId: 'room-1',
+    role: 'viewer',
+    RTCPeerConnectionImpl: FakePeerConnection,
+    reconnectDelayMs: 1,
+    setTimeoutImpl: (callback) => { scheduled.push(callback); return callback; },
+    clearTimeoutImpl: (timer) => { const index = scheduled.indexOf(timer); if (index >= 0) scheduled.splice(index, 1); },
+  });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', de: 'host-a', descricao: { type: 'offer', sdp: 'host-offer' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const peer = FakePeerConnection.instances[0];
+  peer.connectionState = 'disconnected';
+  peer.onconnectionstatechange();
+  peer.connectionState = 'connected';
+  peer.onconnectionstatechange();
+  scheduled.forEach((retry) => retry());
+
+  assert.equal(session.getPeerCount(), 1);
+  assert.equal(peer.connectionState, 'connected');
+  assert.equal(scheduled.length, 0);
+  session.close();
+});
+
 test('stream peer: viewers answer offers and apply ICE candidates received early', async () => {
   FakePeerConnection.instances = [];
   const socket = new FakeSocket();

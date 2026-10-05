@@ -46,7 +46,7 @@ afterEach(async () => {
   else globalThis.RTCPeerConnection = originalRTCPeerConnection;
 });
 
-async function renderViewer({ volumeWritable = true, nativeFullscreen = false, fullscreenRejects = false, nativeVideoFullscreen = false, room = { id: 'room-1', name: 'Partida', isLive: true }, entryRoom = room, requiredAccessCode = null, socketId = 'viewer-1', onRequestShare = () => {}, onStopShare = () => {}, localStream = null, joinedInitially = false, accessCode = '', role = 'viewer' } = {}) {
+async function renderViewer({ volumeWritable = true, nativeFullscreen = false, fullscreenRejects = false, nativeVideoFullscreen = false, room = { id: 'room-1', name: 'Partida', isLive: true }, entryRoom = room, requiredAccessCode = null, socketId = 'viewer-1', onRequestShare = () => {}, onStopShare = () => {}, localStream = null, joinedInitially = false, accessCode = '', role = 'viewer', deferRoomEntries = false } = {}) {
   peerConnections = [];
   globalThis.RTCPeerConnection = FakePeerConnection;
   let playCalls = 0;
@@ -64,6 +64,7 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
   const listeners = new Map();
   const emittedEvents = [];
   const emittedPayloads = [];
+  const pendingRoomEntries = [];
   const socket = {
     id: socketId,
     connected: true,
@@ -73,7 +74,8 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
       emittedEvents.push(event);
       emittedPayloads.push({ event, payload });
       if (event === 'salas:entrar') {
-        callback?.(requiredAccessCode && payload?.accessCode !== requiredAccessCode
+        if (deferRoomEntries) pendingRoomEntries.push({ payload, callback });
+        else callback?.(requiredAccessCode && payload?.accessCode !== requiredAccessCode
           ? { ok: false, error: 'Código de acesso inválido.' }
           : { ok: true, room: { ...entryRoom }, presenterSocketId: entryRoom.presenterSocketId ?? null, youtubeSource: entryRoom.youtubeSource || null, youtubePlayback: entryRoom.youtubePlayback || null });
       } else if (event === 'salas:ao-vivo' && payload?.isLive) {
@@ -110,7 +112,7 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
       peerConnections[0].ontrack({ streams: [{ getAudioTracks: () => [{ id: 'audio-1' }] }] });
     });
   }
-  return { renderer, videoNode, stageNode, socket, listeners, getExitCalls: () => exitCalls, getPlayCalls: () => playCalls, getFullscreenCalls: () => fullscreenCalls, getVideoFullscreenCalls: () => videoFullscreenCalls, emittedEvents, emittedPayloads,
+  return { renderer, videoNode, stageNode, socket, listeners, pendingRoomEntries, getExitCalls: () => exitCalls, getPlayCalls: () => playCalls, getFullscreenCalls: () => fullscreenCalls, getVideoFullscreenCalls: () => videoFullscreenCalls, emittedEvents, emittedPayloads,
     endRemoteStream: async () => act(async () => peerConnections[0].ontrack({ streams: [] })) };
 }
 
@@ -334,6 +336,40 @@ test('a transmitting member rejoins and restores the screen share after the sock
   const restore = emittedPayloads.find(({ event, payload }) => event === 'salas:ao-vivo' && payload.isLive);
   assert.ok(restore, 'the captured screen should be announced again after rejoining');
   assert.equal(renderer.root.findAllByType('video').length, 1, 'the local capture remains attached');
+});
+
+test('a second socket interruption during room rejoin triggers another recovery attempt', async () => {
+  const { socket, listeners, emittedPayloads, pendingRoomEntries } = await renderViewer({
+    room: { id: 'room-1', name: 'Partida', isLive: false },
+    entryRoom: { id: 'room-1', name: 'Partida', isLive: false },
+    joinedInitially: true,
+    deferRoomEntries: true,
+  });
+
+  await act(async () => {
+    socket.connected = false;
+    listeners.get('disconnect')();
+    socket.connected = true;
+    listeners.get('connect')();
+    await Promise.resolve();
+  });
+  assert.equal(emittedPayloads.filter(({ event }) => event === 'salas:entrar').length, 1);
+
+  await act(async () => {
+    socket.connected = false;
+    listeners.get('disconnect')();
+    socket.connected = true;
+    listeners.get('connect')();
+    await Promise.resolve();
+  });
+  const entryCount = emittedPayloads.filter(({ event }) => event === 'salas:entrar').length;
+  const response = { ok: true, room: { id: 'room-1', name: 'Partida', isLive: false }, presenterSocketId: null };
+  await act(async () => {
+    pendingRoomEntries.forEach(({ callback }) => callback(response));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+  assert.equal(entryCount, 2,
+    'a reconnect arriving during a pending join should not consume the retry flag');
 });
 
 test('a viewer keeps a code entered in the room gate when the socket reconnects', async () => {

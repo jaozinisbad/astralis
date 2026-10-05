@@ -78,6 +78,11 @@ export default function StreamRoom({
       quality,
       onRemoteStream: (_peerId, stream) => setRemoteStream(stream),
       onQualityError: () => setError('O navegador não aceitou o limite de bitrate. A transmissão continuará, mas pode ficar abaixo do perfil selecionado.'),
+      onPeerConnectionFailed: () => {
+        if (joinedRef.current && socket.connected !== false) {
+          socket.emit('sala:espectador-pronto', { roomId });
+        }
+      },
     });
     peerSessionRef.current = peerSession;
     peerSession.setLocalStream(localStream);
@@ -162,13 +167,15 @@ export default function StreamRoom({
     };
     const onConnect = async () => {
       if (!reconnectRequiredRef.current) return;
-      reconnectRequiredRef.current = false;
       const rejoined = await entrar(code);
+      if (socket.connected === false) return;
       if (rejoined) {
+        reconnectRequiredRef.current = false;
         setReconnecting(false);
         setError('');
         return;
       }
+      reconnectRequiredRef.current = false;
       setReconnecting(false);
       setRoomClosed(true);
       if (localStream) await onStopShare();

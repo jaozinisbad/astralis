@@ -146,7 +146,7 @@ test('espectador anônimo recebe apenas handlers de sala, sem chat, DM ou voz', 
   assert.equal(handlers['entrar-canal-voz'], undefined);
 });
 
-test('disconnect do anfitrião pelo wiring do servidor encerra a sala e remove espectadores', async () => {
+test('disconnect do anfitrião pelo wiring preserva a sala durante a janela de reconexão', async () => {
   const servidor = criarServidor();
   const viewerHandlers = {};
   const viewerListeners = new Map();
@@ -176,8 +176,8 @@ test('disconnect do anfitrião pelo wiring do servidor encerra a sala e remove e
 
   for (const handler of servidor.socketListeners.get('disconnect')) handler('transport close');
 
-  assert.ok(servidor.enviados.some((item) => item.evento === 'sala:encerrada'));
-  assert.equal(viewerRooms.has(`sala-${created.room.id}`), false);
+  assert.equal(servidor.enviados.some((item) => item.evento === 'sala:encerrada'), false);
+  assert.equal(viewerRooms.has(`sala-${created.room.id}`), true);
 });
 
 test('sinalização WebRTC legada só chega a outro socket no mesmo canal de voz', () => {
