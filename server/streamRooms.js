@@ -20,6 +20,10 @@ function criarResumoSala(sala) {
     ownerName: sala.ownerName,
     visibility: sala.visibility,
     isLive: sala.isLive,
+    presenterSocketId: sala.presenterSocketId,
+    presenterName: sala.presenterName,
+    presenters: sala.presenters.map((presenter) => ({ ...presenter })),
+    reservedPresenterSlot: Boolean(sala.disconnectedPresenterSocketId),
     viewerCount: sala.viewers.size,
     createdAt: sala.createdAt,
   };
@@ -73,12 +77,22 @@ function createStreamRoomManager({
     return sala.viewers.get(socketId)?.userName || 'Visitante';
   }
 
+  function atualizarPresenters(sala) {
+    sala.presenterSocketId = sala.presenters[0]?.socketId ?? null;
+    sala.presenterName = sala.presenters[0]?.name ?? null;
+    sala.isLive = sala.presenters.length > 0;
+  }
+
+  function copiarPresenters(sala) {
+    return sala.presenters.map((presenter) => ({ ...presenter }));
+  }
+
   function resultadoDeEntrada(sala, socketId, role) {
     const youtubeState = copiarEstadoYoutube(sala);
-    const peerSocketIds = sala.presenterSocketId
-      ? (sala.presenterSocketId === socketId
+    const peerSocketIds = sala.presenters.length
+      ? (sala.presenters.some((presenter) => presenter.socketId === socketId)
         ? socketsDaSala(sala, socketId)
-        : [sala.presenterSocketId])
+        : sala.presenters.map((presenter) => presenter.socketId))
       : role === 'host'
         ? Array.from(sala.viewers.keys())
         : [sala.ownerSocketId];
@@ -90,6 +104,7 @@ function createStreamRoomManager({
       peerSocketIds,
       presenterSocketId: sala.presenterSocketId,
       presenterName: sala.presenterName,
+      presenters: copiarPresenters(sala),
       youtubeSource: youtubeState.source,
       youtubePlayback: youtubeState.playback,
       ...(role === 'host' && sala.accessCode ? { accessCode: sala.accessCode } : {}),
@@ -120,9 +135,11 @@ function createStreamRoomManager({
       visibility,
       accessCode,
       isLive: false,
+      presenters: [],
       presenterSocketId: null,
       presenterName: null,
       disconnectedPresenterSocketId: null,
+      disconnectedPresenterIndex: null,
       ownerDisconnected: false,
       hostDisconnectTimer: null,
       youtubeSource: null,
@@ -145,6 +162,7 @@ function createStreamRoomManager({
       peerSocketIds: [],
       presenterSocketId: null,
       presenterName: null,
+      presenters: [],
       youtubeSource: youtubeState.source,
       youtubePlayback: youtubeState.playback,
       ...(sala.accessCode ? { accessCode: sala.accessCode } : {}),
@@ -180,11 +198,14 @@ function createStreamRoomManager({
       sala.ownerSocketId = socketId;
       salasPorSocket.delete(previousOwnerSocketId);
       if (sala.disconnectedPresenterSocketId === previousOwnerSocketId) {
-        sala.presenterSocketId = socketId;
-        sala.presenterName = sala.ownerName;
-        sala.isLive = true;
+        sala.presenters.splice(sala.disconnectedPresenterIndex ?? 0, 0, {
+          socketId,
+          name: sala.ownerName,
+        });
+        atualizarPresenters(sala);
       }
       sala.disconnectedPresenterSocketId = null;
+      sala.disconnectedPresenterIndex = null;
     }
 
     const role = socketId === sala.ownerSocketId ? 'host' : 'viewer';
@@ -215,34 +236,37 @@ function createStreamRoomManager({
     let previousPresenterSocketId = null;
     let previousPresenterName = null;
     if (isLive) {
-      if (sala.disconnectedPresenterSocketId) {
-        return { ok: false, error: 'O anfitrião está reconectando. Aguarde alguns segundos antes de iniciar outra transmissão.' };
-      }
-      if (sala.presenterSocketId && sala.presenterSocketId !== socketId) {
+      if (!sala.presenters.some((presenter) => presenter.socketId === socketId)
+        && sala.presenters.length + Number(Boolean(sala.disconnectedPresenterSocketId)) >= 2) {
         return {
           ok: false,
-          error: 'Já existe uma transmissão ativa nesta sala.',
+          error: 'Já existem duas transmissões nesta sala ou uma vaga reservada ao anfitrião.',
           presenterSocketId: sala.presenterSocketId,
           presenterName: sala.presenterName,
+          presenters: copiarPresenters(sala),
         };
       }
-      sala.presenterSocketId = socketId;
-      sala.presenterName = nomeDoMembro(sala, socketId);
-      sala.isLive = true;
+      if (!sala.presenters.some((presenter) => presenter.socketId === socketId)) {
+        sala.presenters.push({ socketId, name: nomeDoMembro(sala, socketId) });
+      }
+      atualizarPresenters(sala);
     } else {
-      if (sala.presenterSocketId && sala.presenterSocketId !== socketId) {
+      const index = sala.presenters.findIndex((presenter) => presenter.socketId === socketId);
+      if (index < 0 && sala.presenters.length) {
         return {
           ok: false,
           error: 'Somente quem está transmitindo pode parar a transmissão.',
           presenterSocketId: sala.presenterSocketId,
           presenterName: sala.presenterName,
+          presenters: copiarPresenters(sala),
         };
       }
-      previousPresenterSocketId = sala.presenterSocketId;
-      previousPresenterName = sala.presenterName;
-      sala.presenterSocketId = null;
-      sala.presenterName = null;
-      sala.isLive = false;
+      if (index >= 0) {
+        const [previous] = sala.presenters.splice(index, 1);
+        previousPresenterSocketId = previous.socketId;
+        previousPresenterName = previous.name;
+        atualizarPresenters(sala);
+      }
     }
 
     return {
@@ -251,6 +275,7 @@ function createStreamRoomManager({
       peerSocketIds: socketsDaSala(sala, socketId),
       presenterSocketId: sala.presenterSocketId,
       presenterName: sala.presenterName,
+      presenters: copiarPresenters(sala),
       previousPresenterSocketId,
       previousPresenterName,
     };
@@ -323,6 +348,7 @@ function createStreamRoomManager({
     const viewerSocketIds = Array.from(sala.viewers.keys());
     const presenterSocketId = sala.presenterSocketId;
     const presenterName = sala.presenterName;
+    const presenters = copiarPresenters(sala);
     if (sala.hostDisconnectTimer) clearTimeoutImpl(sala.hostDisconnectTimer);
     sala.hostDisconnectTimer = null;
     salasPorSocket.delete(sala.ownerSocketId);
@@ -336,6 +362,7 @@ function createStreamRoomManager({
       viewerSocketIds,
       presenterSocketId,
       presenterName,
+      presenters,
     };
   }
 
@@ -345,12 +372,12 @@ function createStreamRoomManager({
     if (membership.role === 'host') return endRoom(membership.roomId, socketId);
 
     const sala = salas.get(membership.roomId);
-    const presenterSaiu = sala?.presenterSocketId === socketId;
-    const previousPresenterName = presenterSaiu ? nomeDoMembro(sala, socketId) : null;
+    const presenterIndex = sala?.presenters.findIndex((presenter) => presenter.socketId === socketId) ?? -1;
+    const presenterSaiu = presenterIndex >= 0;
+    const previousPresenterName = presenterSaiu ? sala.presenters[presenterIndex].name : null;
     if (presenterSaiu && sala) {
-      sala.presenterSocketId = null;
-      sala.presenterName = null;
-      sala.isLive = false;
+      sala.presenters.splice(presenterIndex, 1);
+      atualizarPresenters(sala);
     }
     salasPorSocket.delete(socketId);
     sala?.viewers.delete(socketId);
@@ -361,6 +388,7 @@ function createStreamRoomManager({
       hostSocketId: sala?.ownerSocketId,
       presenterSocketId: sala?.presenterSocketId ?? null,
       presenterName: sala?.presenterName ?? null,
+      presenters: sala ? copiarPresenters(sala) : [],
       transmissionStopped: presenterSaiu,
       previousPresenterSocketId: presenterSaiu ? socketId : null,
       previousPresenterName,
@@ -374,13 +402,14 @@ function createStreamRoomManager({
     const sala = salas.get(membership.roomId);
     if (!sala || sala.ownerSocketId !== socketId) return null;
 
-    const presenterDisconnected = sala.presenterSocketId === socketId;
-    const previousPresenterName = presenterDisconnected ? sala.presenterName : null;
+    const presenterIndex = sala.presenters.findIndex((presenter) => presenter.socketId === socketId);
+    const presenterDisconnected = presenterIndex >= 0;
+    const previousPresenterName = presenterDisconnected ? sala.presenters[presenterIndex].name : null;
     if (presenterDisconnected) {
       sala.disconnectedPresenterSocketId = socketId;
-      sala.presenterSocketId = null;
-      sala.presenterName = null;
-      sala.isLive = false;
+      sala.disconnectedPresenterIndex = presenterIndex;
+      sala.presenters.splice(presenterIndex, 1);
+      atualizarPresenters(sala);
     }
     sala.ownerDisconnected = true;
     if (sala.hostDisconnectTimer) clearTimeoutImpl(sala.hostDisconnectTimer);
@@ -399,6 +428,7 @@ function createStreamRoomManager({
       room: criarResumoSala(sala),
       presenterSocketId: sala.presenterSocketId,
       presenterName: sala.presenterName,
+      presenters: copiarPresenters(sala),
       transmissionStopped: presenterDisconnected,
       previousPresenterSocketId: presenterDisconnected ? socketId : null,
       previousPresenterName,
@@ -419,17 +449,43 @@ function createStreamRoomManager({
     return salas.get(roomId)?.presenterSocketId ?? null;
   }
 
-  function canSignal({ roomId, fromSocketId, toSocketId, signalType }) {
+  function getPresenters(roomId) {
+    const sala = salas.get(roomId);
+    return sala ? copiarPresenters(sala) : [];
+  }
+
+  function resolveStreamId(roomId, streamId, { fromSocketId, toSocketId, signalType } = {}) {
+    const sala = salas.get(roomId);
+    if (!sala) return null;
+    if (streamId === undefined) {
+      if (sala.presenters.length === 1) return sala.presenters[0].socketId;
+      const isPresenter = (socketId) => sala.presenters.some((presenter) => presenter.socketId === socketId);
+      // Older clients do not tag signals. The direction identifies their
+      // broadcast, and the relay still tags it for updated clients.
+      if (signalType === 'offer') return isPresenter(fromSocketId) ? fromSocketId : null;
+      if (signalType === 'answer') return isPresenter(toSocketId) ? toSocketId : null;
+      if (signalType === 'candidate') {
+        if (isPresenter(fromSocketId)) return fromSocketId;
+        return isPresenter(toSocketId) ? toSocketId : null;
+      }
+      return null;
+    }
+    return typeof streamId === 'string' && sala.presenters.some((presenter) => presenter.socketId === streamId)
+      ? streamId : null;
+  }
+
+  function canSignal({ roomId, fromSocketId, toSocketId, signalType, streamId }) {
     const sala = salas.get(roomId);
     if (!sala || !sala.isLive || fromSocketId === toSocketId) return false;
     const fromRole = getSocketRole(fromSocketId, roomId);
     const toRole = getSocketRole(toSocketId, roomId);
-    if (!fromRole || !toRole || !sala.presenterSocketId) return false;
+    const resolvedStreamId = resolveStreamId(roomId, streamId, { fromSocketId, toSocketId, signalType });
+    if (!fromRole || !toRole || !resolvedStreamId) return false;
 
-    if (signalType === 'offer') return fromSocketId === sala.presenterSocketId;
-    if (signalType === 'answer') return toSocketId === sala.presenterSocketId;
+    if (signalType === 'offer') return fromSocketId === resolvedStreamId;
+    if (signalType === 'answer') return toSocketId === resolvedStreamId;
     if (signalType === 'candidate') {
-      return fromSocketId === sala.presenterSocketId || toSocketId === sala.presenterSocketId;
+      return fromSocketId === resolvedStreamId || toSocketId === resolvedStreamId;
     }
     return false;
   }
@@ -445,6 +501,8 @@ function createStreamRoomManager({
     getRoom,
     getSocketRole,
     getPresenterSocketId,
+    getPresenters,
+    resolveStreamId,
     setYoutubeSource,
     setYoutubePlayback,
     canSignal,
@@ -536,14 +594,15 @@ function registrarEventosSala({ socket, io, manager }) {
 
   function avisarEncerramento(result) {
     const nomeSala = nomeSalaSocket(result.roomId);
-    if (result.presenterSocketId) {
+    for (const presenter of result.presenters) {
       io.to(nomeSala).emit('sala:transmissao', {
         salaId: result.roomId,
         isLive: false,
         presenterSocketId: null,
         presenterName: null,
-        previousPresenterSocketId: result.presenterSocketId,
-        previousPresenterName: result.presenterName,
+        presenters: [],
+        previousPresenterSocketId: presenter.socketId,
+        previousPresenterName: presenter.name,
       });
     }
     io.to(nomeSala).emit('sala:encerrada', { salaId: result.roomId });
@@ -557,16 +616,21 @@ function registrarEventosSala({ socket, io, manager }) {
     if (result.transmissionStopped) {
       io.to(nomeSala).emit('sala:transmissao', {
         salaId: result.roomId,
-        isLive: false,
-        presenterSocketId: null,
-        presenterName: null,
+        isLive: result.room.isLive,
+        presenterSocketId: result.presenterSocketId,
+        presenterName: result.presenterName,
+        presenters: result.presenters,
         previousPresenterSocketId: result.previousPresenterSocketId,
         previousPresenterName: result.previousPresenterName,
       });
     }
-    const presenterOrHost = result.presenterSocketId || result.hostSocketId;
-    if (presenterOrHost && presenterOrHost !== socketId) {
-      io.to(presenterOrHost).emit('sala:espectador-saiu', { salaId: result.roomId, socketId });
+    const notifyIds = result.presenters.length
+      ? result.presenters.map((presenter) => presenter.socketId)
+      : [result.hostSocketId];
+    for (const notifyId of notifyIds) {
+      if (notifyId && notifyId !== socketId) {
+        io.to(notifyId).emit('sala:espectador-saiu', { salaId: result.roomId, socketId });
+      }
     }
     if (result.room) {
       io.to(nomeSala).emit('sala:estado', { sala: result.room });
@@ -619,9 +683,10 @@ function registrarEventosSala({ socket, io, manager }) {
     if (result.transmissionStopped) {
       io.to(nomeSala).emit('sala:transmissao', {
         salaId: result.roomId,
-        isLive: false,
-        presenterSocketId: null,
-        presenterName: null,
+        isLive: result.room.isLive,
+        presenterSocketId: result.presenterSocketId,
+        presenterName: result.presenterName,
+        presenters: result.presenters,
         previousPresenterSocketId: result.previousPresenterSocketId,
         previousPresenterName: result.previousPresenterName,
       });
@@ -741,8 +806,14 @@ function registrarEventosSala({ socket, io, manager }) {
         playback: resultadoAtualizado.youtubePlayback,
       });
       if (resultadoAtualizado.role === 'viewer' && !roleBeforeJoin) {
-        const presenterOrHost = resultadoAtualizado.presenterSocketId || resultadoAtualizado.hostSocketId;
-        io.to(presenterOrHost).emit('sala:espectador-entrou', { salaId: roomId, socketId: socket.id });
+        const notifyIds = resultadoAtualizado.presenters.length
+          ? resultadoAtualizado.presenters.map((presenter) => presenter.socketId)
+          : [resultadoAtualizado.hostSocketId];
+        for (const notifyId of notifyIds) {
+          if (notifyId !== socket.id) {
+            io.to(notifyId).emit('sala:espectador-entrou', { salaId: roomId, socketId: socket.id });
+          }
+        }
       }
       const estadoDaSala = {
         ...resultadoAtualizado.room,
@@ -755,6 +826,7 @@ function registrarEventosSala({ socket, io, manager }) {
           isLive: resultadoAtualizado.room.isLive,
           presenterSocketId: resultadoAtualizado.presenterSocketId,
           presenterName: resultadoAtualizado.presenterName,
+          presenters: resultadoAtualizado.presenters,
         });
         io.to(nomeSalaSocket(roomId)).emit('sala:estado', { sala: estadoDaSala });
       } else {
@@ -777,11 +849,13 @@ function registrarEventosSala({ socket, io, manager }) {
       return;
     }
 
-    const presenterSocketId = manager.getPresenterSocketId(dados.roomId);
-    if (presenterSocketId && presenterSocketId !== socket.id) {
-      io.to(presenterSocketId).emit('sala:espectador-entrou', { salaId: dados.roomId, socketId: socket.id });
+    const presenters = manager.getPresenters(dados.roomId);
+    for (const presenter of presenters) {
+      if (presenter.socketId !== socket.id) {
+        io.to(presenter.socketId).emit('sala:espectador-entrou', { salaId: dados.roomId, socketId: socket.id });
+      }
     }
-    reply(callback, { ok: true, presenterSocketId });
+    reply(callback, { ok: true, presenterSocketId: presenters[0]?.socketId ?? null, presenters });
   });
 
   socket.on('salas:ao-vivo', (dados, callback) => {
@@ -800,6 +874,7 @@ function registrarEventosSala({ socket, io, manager }) {
       isLive: result.room.isLive,
       presenterSocketId: result.presenterSocketId,
       presenterName: result.presenterName,
+      presenters: result.presenters,
       previousPresenterSocketId: result.previousPresenterSocketId,
       previousPresenterName: result.previousPresenterName,
     });
@@ -879,11 +954,21 @@ function registrarEventosSala({ socket, io, manager }) {
         reply(callback, { ok: false, error: 'Sinalização inválida.' });
         return;
       }
+      const streamId = manager.resolveStreamId(dados.roomId, dados.streamId, {
+        fromSocketId: socket.id,
+        toSocketId: dados.para,
+        signalType: { oferta: 'offer', resposta: 'answer', candidato: 'candidate' }[signalType],
+      });
+      if (!streamId) {
+        reply(callback, { ok: false, error: 'Transmissão inválida ou ambígua.' });
+        return;
+      }
       const permitido = manager.canSignal({
         roomId: dados.roomId,
         fromSocketId: socket.id,
         toSocketId: dados.para,
         signalType: { oferta: 'offer', resposta: 'answer', candidato: 'candidate' }[signalType],
+        streamId,
       });
       if (!permitido) {
         reply(callback, { ok: false, error: 'Este destino não pertence à sua sala.' });
@@ -894,8 +979,10 @@ function registrarEventosSala({ socket, io, manager }) {
         return;
       }
       const payload = dados[payloadKey] ?? dados.dados;
-      io.to(dados.para).emit(`sala:sinal:${signalType}`, { roomId: dados.roomId, de: socket.id, [payloadKey]: payload });
-      reply(callback, { ok: true });
+      io.to(dados.para).emit(`sala:sinal:${signalType}`, {
+        roomId: dados.roomId, de: socket.id, streamId, [payloadKey]: payload,
+      });
+      reply(callback, { ok: true, streamId });
     });
   });
 

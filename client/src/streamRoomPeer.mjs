@@ -6,6 +6,7 @@ export function createStreamRoomPeerSession({
   socket,
   roomId,
   role,
+  streamId,
   quality = {},
   onRemoteStream = () => {},
   onQualityError = () => {},
@@ -35,8 +36,19 @@ export function createStreamRoomPeerSession({
     socket.emit(`sala:sinal:${type === 'offer' ? 'oferta' : type === 'answer' ? 'resposta' : 'candidato'}`, {
       roomId,
       para: peerId,
+      ...(streamId ? { streamId } : {}),
       [field]: payload,
     });
+  }
+
+  function matchesSignal(message) {
+    if (message.streamId !== undefined) {
+      return message.streamId === streamId && (role !== 'viewer' || !streamId || message.de === streamId);
+    }
+    // The previous server relayed signals without a streamId. The sender
+    // identifies a viewer's presenter; hosts only accept existing peers.
+    if (!streamId) return true;
+    return role === 'viewer' ? message.de === streamId : peers.has(message.de);
   }
 
   function clearReconnectTimer(peerId) {
@@ -139,7 +151,7 @@ export function createStreamRoomPeerSession({
   }
 
   async function receiveOffer(message = {}) {
-    if (closed || role !== 'viewer' || message.roomId !== roomId || !message.de || !message.descricao) return;
+    if (closed || role !== 'viewer' || message.roomId !== roomId || !message.de || !message.descricao || !matchesSignal(message)) return;
     const peer = createPeer(message.de);
     if (peer.remoteDescription?.sdp === message.descricao.sdp && peer.localDescription?.type === 'answer') {
       // The presenter can retry an offer if our first answer was lost. Re-send
@@ -155,7 +167,7 @@ export function createStreamRoomPeerSession({
   }
 
   async function receiveAnswer(message = {}) {
-    if (closed || role !== 'host' || message.roomId !== roomId || !message.de || !message.resposta) return;
+    if (closed || role !== 'host' || message.roomId !== roomId || !message.de || !message.resposta || !matchesSignal(message)) return;
     const peer = peers.get(message.de);
     if (!peer) return;
     await peer.setRemoteDescription(message.resposta);
@@ -163,7 +175,7 @@ export function createStreamRoomPeerSession({
   }
 
   async function receiveCandidate(message = {}) {
-    if (closed || message.roomId !== roomId || !message.de || !message.candidato) return;
+    if (closed || message.roomId !== roomId || !message.de || !message.candidato || !matchesSignal(message)) return;
     let peer = peers.get(message.de);
     if (!peer && role === 'viewer') peer = createPeer(message.de);
     if (!peer) return;
@@ -196,7 +208,8 @@ export function createStreamRoomPeerSession({
   }
 
   function onViewerJoined(message = {}) {
-    if (message.salaId !== roomId || !message.socketId) return;
+    if (role !== 'host' || message.salaId !== roomId || !message.socketId
+      || (message.streamId !== undefined && message.streamId !== streamId)) return;
     viewers.add(message.socketId);
     const peer = peers.get(message.socketId);
     if (peer && ['disconnected', 'failed', 'closed'].includes(peer.connectionState)) {
