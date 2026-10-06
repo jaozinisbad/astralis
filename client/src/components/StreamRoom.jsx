@@ -59,8 +59,6 @@ export default function StreamRoom({
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [remoteStreams, setRemoteStreams] = useState({});
   const [selectedPresenterId, setSelectedPresenterId] = useState(null);
-  const [selectionDismissed, setSelectionDismissed] = useState(false);
-  const selectionExplicitRef = useRef(false);
   const activePresenters = presentersDaSala(room);
   const presenterIds = activePresenters.map((presenter) => presenter.socketId).join('|');
   const [joined, setJoined] = useState(Boolean(joinedInitially));
@@ -274,14 +272,11 @@ export default function StreamRoom({
   }, [quality]);
 
   useEffect(() => {
-    if (selectionDismissed) return;
+    if (!selectedPresenterId) return;
     const ids = presenterIds ? presenterIds.split('|') : [];
     if (localStream && socket?.id && !ids.includes(socket.id)) ids.push(socket.id);
-    if (selectedPresenterId && !ids.includes(selectedPresenterId)) selectionExplicitRef.current = false;
-    if (selectionExplicitRef.current && selectedPresenterId && ids.includes(selectedPresenterId)) return;
-    const automaticSelection = ids.length === 1 ? ids[0] : null;
-    if (selectedPresenterId !== automaticSelection) setSelectedPresenterId(automaticSelection);
-  }, [presenterIds, selectedPresenterId, selectionDismissed, localStream, socket?.id]);
+    if (!ids.includes(selectedPresenterId)) setSelectedPresenterId(null);
+  }, [presenterIds, selectedPresenterId, localStream, socket?.id]);
 
   useEffect(() => {
     setRemoteAudioMuted(true);
@@ -291,7 +286,9 @@ export default function StreamRoom({
     ? [...activePresenters, { socketId: socket.id, name: 'Você' }]
     : activePresenters;
   const selectedPresenter = shownPresenters.find((presenter) => presenter.socketId === selectedPresenterId) || null;
-  const selectedStream = selectedPresenterId === socket?.id ? localStream : remoteStreams[selectedPresenterId] || null;
+  const selectedStream = selectedPresenter
+    ? selectedPresenterId === socket?.id ? localStream : remoteStreams[selectedPresenterId] || null
+    : null;
   const selectedRemoteStream = selectedPresenterId && selectedPresenterId !== socket?.id ? selectedStream : null;
 
   useEffect(() => {
@@ -554,8 +551,6 @@ export default function StreamRoom({
   async function pararDeAssistir() {
     setRemoteAudioMuted(true);
     setSelectedPresenterId(null);
-    selectionExplicitRef.current = false;
-    setSelectionDismissed(true);
     setPseudoFullscreen(false);
     if (typeof document !== 'undefined' && document.fullscreenElement === stageRef.current) {
       try { await document.exitFullscreen?.(); }
@@ -658,7 +653,7 @@ export default function StreamRoom({
               playback={youtubePlayback}
               onPlaybackCommand={enviarComandoYouTube}
             />
-          ) : (
+          ) : selectedPresenter || !shownPresenters.length ? (
             <div className="stream-stage-empty" role="status" aria-live="polite">
               {selectedPresenter && room?.isLive
                 ? <div className="stream-stage-empty__spinner" aria-hidden="true" />
@@ -672,9 +667,9 @@ export default function StreamRoom({
                 {isRoomOwner && <button type="button" className="rooms-secondary-button" onClick={abrirFonteYouTube}>Adicionar fonte de vídeo</button>}
               </div>}
             </div>
-          )}
+          ) : null}
           {selectedPresenter && <button type="button" className="stream-stage-back" aria-label="Voltar às transmissões" onClick={pararDeAssistir}>← Transmissões</button>}
-          {shownPresenters.length > 0 && <div className="stream-stage-tiles" role="group" aria-label="Transmissões da sala">
+          {!selectedPresenter && shownPresenters.length > 0 && <div className="stream-stage-tiles" role="group" aria-label="Transmissões da sala">
             {shownPresenters.map((presenter) => {
               const stream = presenter.socketId === socket?.id ? localStream : remoteStreams[presenter.socketId];
               return <button
@@ -684,7 +679,7 @@ export default function StreamRoom({
                 data-stream-tile={true}
                 aria-label={`Assistir transmissão de ${presenter.name || 'Participante'}`}
                 aria-pressed={selectedPresenterId === presenter.socketId}
-                onClick={() => { setRemoteAudioMuted(true); selectionExplicitRef.current = true; setSelectedPresenterId(presenter.socketId); setSelectionDismissed(false); }}
+                onClick={() => { setRemoteAudioMuted(true); setSelectedPresenterId(presenter.socketId); }}
               >
                 {stream
                   ? <video data-stream-thumbnail={true} autoPlay muted playsInline ref={(node) => {

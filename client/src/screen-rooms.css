@@ -296,17 +296,19 @@ button.screen-picker-item { font-family: inherit; }
   top: 12px;
   left: 12px;
   z-index: 3;
-  display: flex;
-  gap: 8px;
-  max-width: calc(100% - 24px);
-  overflow-x: auto;
-  scrollbar-width: thin;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 500px));
+  align-items: start;
+  gap: 20px;
+  width: calc(100% - 24px);
 }
 .stream-stage-tile {
   position: relative;
-  width: clamp(112px, 12vw, 160px);
-  aspect-ratio: 16 / 10;
-  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   padding: 0;
   border: 2px solid rgba(178, 187, 219, .3);
@@ -394,8 +396,8 @@ button.screen-picker-item { font-family: inherit; }
   .stream-stage { min-height: 180px; border-radius: 11px; }
   .stream-stage > video { max-height: none; }
   .stream-stage:fullscreen > video { max-height: 100vh; }
-  .stream-stage-tiles { top: 54px; left: 8px; gap: 6px; max-width: calc(100% - 16px); }
-  .stream-stage-tile { width: clamp(92px, 26vw, 118px); border-radius: 7px; }
+  .stream-stage-tiles { top: 8px; left: 8px; gap: 10px; width: calc(100% - 16px); }
+  .stream-stage-tile { border-radius: 7px; }
   .stream-stage-tile__label { padding: 4px 5px; font-size: 9px; }
   .stream-stage-back { bottom: 8px; left: 8px; min-height: 32px; }
   .stream-room-participants { min-height: 0; border-radius: 11px; }

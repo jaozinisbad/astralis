@@ -127,6 +127,9 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
       peerConnections[0].ontrack({ streams: [{ getAudioTracks: () => [{ id: 'audio-1' }] }] });
     });
   }
+  // Control tests exercise an explicitly opened stream, not an automatic selection.
+  const tile = renderer.root.findAllByProps({ 'data-stream-tile': true })[0];
+  if (tile) await act(async () => tile.props.onClick());
   return { renderer, videoNode, stageNode, socket, listeners, pendingRoomEntries, getExitCalls: () => exitCalls, getPlayCalls: () => playCalls, getFullscreenCalls: () => fullscreenCalls, getVideoFullscreenCalls: () => videoFullscreenCalls, emittedEvents, emittedPayloads,
     endRemoteStream: async () => act(async () => peerConnections[0].ontrack({ streams: [] })) };
 }
@@ -184,6 +187,8 @@ test('viewer uses an in-page fullscreen fallback when native element fullscreen 
     const fullscreenButton = renderer.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Tela cheia');
     await act(async () => fullscreenButton.props.onClick());
     assert.match(renderer.root.findByProps({ 'aria-label': 'Tela transmitida' }).props.className, /is-pseudo-fullscreen/);
+    assert.equal(renderer.root.findAllByProps({ 'data-stream-thumbnail': true }).length, 0);
+    assert.equal(renderer.root.findAllByProps({ 'data-stream-tile': true }).length, 0);
     await act(async () => fullscreenButton.props.onClick());
     assert.doesNotMatch(renderer.root.findByProps({ 'aria-label': 'Tela transmitida' }).props.className, /is-pseudo-fullscreen/);
   } finally {
@@ -354,7 +359,8 @@ test('a transmitting member rejoins and restores the screen share after the sock
   assert.equal(emittedPayloads.find(({ event }) => event === 'salas:entrar').payload.accessCode, 'ROOM42');
   const restore = emittedPayloads.find(({ event, payload }) => event === 'salas:ao-vivo' && payload.isLive);
   assert.ok(restore, 'the captured screen should be announced again after rejoining');
-  assert.ok(renderer.root.findByProps({ 'data-stream-stage-video': true }), 'the local capture remains attached');
+  assert.ok(renderer.root.findByProps({ 'data-stream-thumbnail': true }), 'the local capture remains attached in the gallery after reconnect');
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-stage-video': true }).length, 0, 'reconnect does not automatically enlarge another stream');
 });
 
 test('a second socket interruption during room rejoin triggers another recovery attempt', async () => {

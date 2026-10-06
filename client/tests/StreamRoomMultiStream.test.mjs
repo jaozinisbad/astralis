@@ -96,6 +96,7 @@ test('two presenters appear as selectable thumbnails and a third share is disabl
   assert.equal(renderer.root.findAllByProps({ 'data-stream-stage-video': true }).length, 0);
   assert.equal(tiles[0].props['aria-pressed'], false);
   await act(async () => tiles[0].props.onClick());
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-tile': true }).length, 0, 'hide the gallery even while the selected stream is connecting');
   assert.equal(renderer.root.findAllByProps({ 'data-stream-stage-video': true }).length, 0);
   assert.equal(renderer.root.findAllByType('h2').some((node) => node.children.includes('Conectando à transmissão…')), true);
   const share = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Compartilhar tela');
@@ -104,6 +105,8 @@ test('two presenters appear as selectable thumbnails and a third share is disabl
 
 test('a second member can share while only one presenter is active', async () => {
   const { renderer } = await showRoom([{ socketId: 'alex', name: 'Alex' }]);
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-tile': true }).length, 1);
+  assert.equal(renderer.root.findAllByType('h2').some((node) => node.children.includes('Conectando à transmissão…')), false, 'a sole stream must not be enlarged automatically');
   const share = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Compartilhar tela');
   assert.equal(share.props.disabled, false);
 });
@@ -143,10 +146,18 @@ test('switching selected streams mutes the newly selected stream until audio is 
   assert.ok(tileVideos.every((node) => node.props.muted === true));
   const tiles = renderer.root.findAll((node) => node.type === 'button' && node.props['data-stream-tile']);
   await act(async () => tiles[0].props.onClick());
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-thumbnail': true }).length, 0);
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-tile': true }).length, 0);
   const mute = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Silenciar áudio');
   await act(async () => mute.props.onClick());
   assert.equal(renderer.root.findByProps({ 'data-stream-stage-video': true }).props.muted, false);
-  await act(async () => tiles[1].props.onClick());
+  const backToGallery = renderer.root.findByProps({ 'aria-label': 'Voltar às transmissões' });
+  await act(async () => backToGallery.props.onClick());
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-stage-video': true }).length, 0, 'the gallery has no background video');
+  const restoredTiles = renderer.root.findAllByProps({ 'data-stream-tile': true });
+  assert.equal(restoredTiles.length, 2);
+  assert.ok(renderer.root.findAllByProps({ 'data-stream-thumbnail': true }).every((node) => node.props.muted));
+  await act(async () => restoredTiles[1].props.onClick());
   assert.equal(renderer.root.findByProps({ 'data-stream-stage-video': true }).props.muted, true);
   assert.ok(renderer.root.findAll((node) => node.type === 'video' && node.props['data-stream-thumbnail']).every((node) => node.props.muted === true));
   const unmuteSelected = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Silenciar áudio');
@@ -155,4 +166,19 @@ test('switching selected streams mutes the newly selected stream until audio is 
   const back = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Voltar às transmissões');
   await act(async () => back.props.onClick());
   assert.equal(renderer.root.findAll((node) => node.type === 'video' && node.props.muted === false).length, 0);
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-stage-video': true }).length, 0);
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-tile': true }).length, 2);
+});
+
+test('when the selected presenter leaves, the remaining stream stays in the gallery', async () => {
+  const { renderer, dispatch } = await showRoom([
+    { socketId: 'alex', name: 'Alex' }, { socketId: 'bia', name: 'Bia' },
+  ]);
+  await act(async () => renderer.root.findAllByProps({ 'data-stream-tile': true })[0].props.onClick());
+  await dispatch('sala:transmissao', {
+    salaId: 'room-1', isLive: true, presenters: [{ socketId: 'bia', name: 'Bia' }],
+  });
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-stage-video': true }).length, 0);
+  assert.equal(renderer.root.findAllByProps({ 'aria-label': 'Voltar às transmissões' }).length, 0);
+  assert.equal(renderer.root.findAllByProps({ 'data-stream-tile': true }).length, 1);
 });
