@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createStreamRoomPeerSession } from '../streamRoomPeer.mjs';
+import { copyRoomInviteUrl } from '../roomInvite.mjs';
 import { parseYouTubeVideoId } from '../youtubeVideoId.mjs';
 import StreamRoomActionBar from './StreamRoomActionBar.jsx';
 import YouTubeRoomPlayer from './YouTubeRoomPlayer.jsx';
@@ -18,11 +19,23 @@ function emitir(socket, evento, dados) {
 
 function salaComPresenter(resposta) {
   if (!resposta?.room) return resposta?.room || null;
+  const presenterSocketId = resposta.presenterSocketId ?? resposta.room.presenterSocketId ?? null;
+  const presenterName = resposta.presenterName ?? resposta.room.presenterName ?? null;
   return {
     ...resposta.room,
-    presenterSocketId: resposta.presenterSocketId ?? resposta.room.presenterSocketId ?? null,
-    presenterName: resposta.presenterName ?? resposta.room.presenterName ?? null,
+    presenterSocketId,
+    presenterName,
+    presenters: Array.isArray(resposta.room.presenters)
+      ? resposta.room.presenters
+      : presenterSocketId ? [{ socketId: presenterSocketId, name: presenterName || 'Participante' }] : [],
   };
+}
+
+function presentersDaSala(room) {
+  if (Array.isArray(room?.presenters)) return room.presenters;
+  return room?.presenterSocketId
+    ? [{ socketId: room.presenterSocketId, name: room.presenterName || 'Participante' }]
+    : [];
 }
 
 export default function StreamRoom({
@@ -44,8 +57,12 @@ export default function StreamRoom({
   const [youtubePlayback, setYoutubePlayback] = useState(initialRoom?.youtubePlayback || null);
   const [youtubeDialogOpen, setYoutubeDialogOpen] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
-  const peerRole = room?.presenterSocketId === socket?.id ? 'host' : 'viewer';
-  const [remoteStream, setRemoteStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [selectedPresenterId, setSelectedPresenterId] = useState(null);
+  const [selectionDismissed, setSelectionDismissed] = useState(false);
+  const selectionExplicitRef = useRef(false);
+  const activePresenters = presentersDaSala(room);
+  const presenterIds = activePresenters.map((presenter) => presenter.socketId).join('|');
   const [joined, setJoined] = useState(Boolean(joinedInitially));
   const [joining, setJoining] = useState(role === 'viewer' && !joinedInitially);
   const [code, setCode] = useState(initialAccessCode);
@@ -59,7 +76,8 @@ export default function StreamRoom({
   const [volumeSupported, setVolumeSupported] = useState(null);
   const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
   const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
-  const peerSessionRef = useRef(null);
+  const hostSessionRef = useRef(null);
+  const viewerSessionsRef = useRef(new Map());
   const presenterPeerIdsRef = useRef([]);
   const requestedStreamRef = useRef(null);
   const joinedRef = useRef(Boolean(joinedInitially));
@@ -68,25 +86,21 @@ export default function StreamRoom({
   const remoteVideoRef = useRef(null);
   const stageRef = useRef(null);
   const hadRemoteStreamRef = useRef(false);
+  const closedCaptureStoppedRef = useRef(null);
 
   useEffect(() => {
     if (!socket || !roomId || !role) return undefined;
-    const peerSession = createStreamRoomPeerSession({
+    const hostSession = createStreamRoomPeerSession({
       socket,
       roomId,
-      role: peerRole,
+      role: 'host',
+      streamId: socket.id,
       quality,
-      onRemoteStream: (_peerId, stream) => setRemoteStream(stream),
       onQualityError: () => setError('O navegador não aceitou o limite de bitrate. A transmissão continuará, mas pode ficar abaixo do perfil selecionado.'),
-      onPeerConnectionFailed: () => {
-        if (joinedRef.current && socket.connected !== false) {
-          socket.emit('sala:espectador-pronto', { roomId });
-        }
-      },
     });
-    peerSessionRef.current = peerSession;
-    peerSession.setLocalStream(localStream);
-    peerSession.setViewers(presenterPeerIdsRef.current);
+    hostSessionRef.current = hostSession;
+    hostSession.setLocalStream(localStream);
+    hostSession.setViewers(presenterPeerIdsRef.current);
 
     const onClosed = (message = {}) => {
       if (message.salaId === roomId) setRoomClosed(true);
@@ -97,10 +111,15 @@ export default function StreamRoom({
         const sameLiveState = Boolean(current?.isLive) === Boolean(message.sala.isLive);
         const hasPresenterId = Object.prototype.hasOwnProperty.call(message.sala, 'presenterSocketId');
         const hasPresenterName = Object.prototype.hasOwnProperty.call(message.sala, 'presenterName');
+        const presenterSocketId = hasPresenterId ? message.sala.presenterSocketId : sameLiveState ? current?.presenterSocketId || null : null;
+        const presenterName = hasPresenterName ? message.sala.presenterName : sameLiveState ? current?.presenterName || null : null;
         return {
           ...message.sala,
-          presenterSocketId: hasPresenterId ? message.sala.presenterSocketId : sameLiveState ? current?.presenterSocketId || null : null,
-          presenterName: hasPresenterName ? message.sala.presenterName : sameLiveState ? current?.presenterName || null : null,
+          presenterSocketId,
+          presenterName,
+          presenters: Array.isArray(message.sala.presenters)
+            ? message.sala.presenters
+            : presenterSocketId ? [{ socketId: presenterSocketId, name: presenterName || 'Participante' }] : [],
         };
       });
     };
@@ -111,10 +130,13 @@ export default function StreamRoom({
         isLive: Boolean(message.isLive),
         presenterSocketId: message.presenterSocketId || null,
         presenterName: message.presenterName || null,
+        presenters: Array.isArray(message.presenters)
+          ? message.presenters
+          : message.presenterSocketId ? [{ socketId: message.presenterSocketId, name: message.presenterName || 'Participante' }] : [],
       } : current);
       if (!message.isLive) {
         presenterPeerIdsRef.current = [];
-        peerSessionRef.current?.resetPeers();
+        hostSessionRef.current?.resetPeers();
       }
     };
     const onYouTubeState = (message = {}) => {
@@ -138,10 +160,47 @@ export default function StreamRoom({
       socket.off('sala:transmissao', onTransmission);
       socket.off('sala:youtube:estado', onYouTubeState);
       socket.off('sala:youtube:reproducao', onYouTubePlayback);
-      peerSession.close();
-      peerSessionRef.current = null;
+      hostSession.close();
+      if (hostSessionRef.current === hostSession) hostSessionRef.current = null;
+      viewerSessionsRef.current.forEach((session) => session.close());
+      viewerSessionsRef.current.clear();
     };
-  }, [socket, roomId, peerRole]);
+  }, [socket, roomId, socket?.id]);
+
+  useEffect(() => {
+    if (!socket || !roomId || !joined || reconnecting) return;
+    const nextIds = new Set(activePresenters.map((presenter) => presenter.socketId).filter((id) => id && id !== socket.id));
+    viewerSessionsRef.current.forEach((session, id) => {
+      if (nextIds.has(id)) return;
+      session.close();
+      viewerSessionsRef.current.delete(id);
+      setRemoteStreams((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, id)) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    });
+    nextIds.forEach((id) => {
+      if (viewerSessionsRef.current.has(id)) return;
+      viewerSessionsRef.current.set(id, createStreamRoomPeerSession({
+        socket,
+        roomId,
+        role: 'viewer',
+        streamId: id,
+        onRemoteStream: (_peerId, stream) => setRemoteStreams((current) => {
+          if (!stream && !current[id]) return current;
+          if (stream) return { ...current, [id]: stream };
+          const next = { ...current };
+          delete next[id];
+          return next;
+        }),
+        onPeerConnectionFailed: () => {
+          if (joinedRef.current && socket.connected !== false) socket.emit('sala:espectador-pronto', { roomId });
+        },
+      }));
+    });
+  }, [socket, roomId, joined, reconnecting, presenterIds]);
 
   useEffect(() => {
     if (role !== 'viewer' || joinedInitially) return;
@@ -158,12 +217,22 @@ export default function StreamRoom({
       joinedRef.current = false;
       requestedStreamRef.current = null;
       presenterPeerIdsRef.current = [];
-      peerSessionRef.current?.resetPeers();
+      hostSessionRef.current?.resetPeers();
+      viewerSessionsRef.current.forEach((session) => session.resetPeers());
+      setRemoteStreams({});
       setJoined(false);
       setReconnecting(true);
-      setRoom((current) => current?.presenterSocketId === socket.id
-        ? { ...current, isLive: false, presenterSocketId: null, presenterName: null }
-        : current);
+      setRoom((current) => {
+        if (!current) return current;
+        const presenters = presentersDaSala(current).filter((presenter) => presenter.socketId !== socket.id);
+        return {
+          ...current,
+          isLive: presenters.length > 0,
+          presenters,
+          presenterSocketId: presenters[0]?.socketId || null,
+          presenterName: presenters[0]?.name || null,
+        };
+      });
     };
     const onConnect = async () => {
       if (!reconnectRequiredRef.current) return;
@@ -189,24 +258,53 @@ export default function StreamRoom({
   }, [socket, roomId, initialAccessCode, code, localStream, onStopShare]);
 
   useEffect(() => {
-    peerSessionRef.current?.setLocalStream(localStream);
+    hostSessionRef.current?.setLocalStream(localStream);
   }, [localStream]);
 
   useEffect(() => {
-    peerSessionRef.current?.setQuality(quality);
+    if (!roomClosed || !localStream || closedCaptureStoppedRef.current === localStream) return;
+    closedCaptureStoppedRef.current = localStream;
+    Promise.resolve().then(() => onStopShare()).catch(() => {
+      localStream.getTracks?.().forEach((track) => track.stop?.());
+    });
+  }, [roomClosed, localStream, onStopShare]);
+
+  useEffect(() => {
+    hostSessionRef.current?.setQuality(quality);
   }, [quality]);
 
   useEffect(() => {
-    if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null;
-  }, [localStream]);
+    if (selectionDismissed) return;
+    const ids = presenterIds ? presenterIds.split('|') : [];
+    if (localStream && socket?.id && !ids.includes(socket.id)) ids.push(socket.id);
+    if (selectedPresenterId && !ids.includes(selectedPresenterId)) selectionExplicitRef.current = false;
+    if (selectionExplicitRef.current && selectedPresenterId && ids.includes(selectedPresenterId)) return;
+    const automaticSelection = ids.length === 1 ? ids[0] : null;
+    if (selectedPresenterId !== automaticSelection) setSelectedPresenterId(automaticSelection);
+  }, [presenterIds, selectedPresenterId, selectionDismissed, localStream, socket?.id]);
 
   useEffect(() => {
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remoteStream || null;
-  }, [remoteStream]);
+    setRemoteAudioMuted(true);
+  }, [selectedPresenterId]);
+
+  const shownPresenters = localStream && socket?.id && !activePresenters.some((presenter) => presenter.socketId === socket.id)
+    ? [...activePresenters, { socketId: socket.id, name: 'Você' }]
+    : activePresenters;
+  const selectedPresenter = shownPresenters.find((presenter) => presenter.socketId === selectedPresenterId) || null;
+  const selectedStream = selectedPresenterId === socket?.id ? localStream : remoteStreams[selectedPresenterId] || null;
+  const selectedRemoteStream = selectedPresenterId && selectedPresenterId !== socket?.id ? selectedStream : null;
+
+  useEffect(() => {
+    if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null;
+  }, [localStream, selectedPresenterId]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = selectedRemoteStream || null;
+  }, [selectedRemoteStream, selectedPresenterId]);
 
   useEffect(() => {
     const video = remoteVideoRef.current;
-    if (!video || !remoteStream) return;
+    if (!video || !selectedRemoteStream) return;
     try {
       const originalVolume = video.volume;
       const probeVolume = originalVolume === 0.5 ? 0.25 : 0.5;
@@ -219,7 +317,7 @@ export default function StreamRoom({
     }
     try { Promise.resolve(video.play?.()).catch(() => setPlaybackNeedsGesture(true)); }
     catch { setPlaybackNeedsGesture(true); }
-  }, [remoteStream]);
+  }, [selectedRemoteStream, selectedPresenterId]);
 
   useEffect(() => {
     if (!remoteVideoRef.current) return;
@@ -228,7 +326,7 @@ export default function StreamRoom({
       catch { setVolumeSupported(false); }
     }
     remoteVideoRef.current.muted = remoteAudioMuted;
-  }, [remoteStream, volume, volumeSupported, remoteAudioMuted]);
+  }, [selectedRemoteStream, selectedPresenterId, volume, volumeSupported, remoteAudioMuted]);
 
   useEffect(() => {
     if (!pseudoFullscreen || typeof document === 'undefined' || !document.body) return undefined;
@@ -238,7 +336,7 @@ export default function StreamRoom({
   }, [pseudoFullscreen]);
 
   useEffect(() => {
-    if (remoteStream) {
+    if (selectedRemoteStream) {
       hadRemoteStreamRef.current = true;
       return;
     }
@@ -248,12 +346,12 @@ export default function StreamRoom({
     if (typeof document !== 'undefined' && document.fullscreenElement === stageRef.current) {
       Promise.resolve(document.exitFullscreen?.()).catch(() => setError('Use o controle de tela cheia do navegador para sair.'));
     }
-  }, [remoteStream]);
+  }, [selectedRemoteStream]);
 
   useEffect(() => {
     if (!socket || !joined || !roomId || reconnecting || socket.connected === false) return;
     if (localStream) {
-      if (requestedStreamRef.current === localStream || room?.presenterSocketId === socket.id) return;
+      if (requestedStreamRef.current === localStream || activePresenters.some((presenter) => presenter.socketId === socket.id)) return;
       requestedStreamRef.current = localStream;
       emitir(socket, 'salas:ao-vivo', { roomId, isLive: true }).then((resposta) => {
         if (!resposta.ok) {
@@ -264,24 +362,23 @@ export default function StreamRoom({
         }
         presenterPeerIdsRef.current = resposta.peerSocketIds || [];
         setRoom(salaComPresenter(resposta));
-        peerSessionRef.current?.setViewers(presenterPeerIdsRef.current);
+        hostSessionRef.current?.setViewers(presenterPeerIdsRef.current);
       });
       return;
     }
-    if (!requestedStreamRef.current) return;
+    if (!requestedStreamRef.current && !activePresenters.some((presenter) => presenter.socketId === socket.id)) return;
     requestedStreamRef.current = null;
     presenterPeerIdsRef.current = [];
     emitir(socket, 'salas:ao-vivo', { roomId, isLive: false }).then((resposta) => {
       if (resposta.ok) setRoom(salaComPresenter(resposta));
       else if (!roomClosed) setError(resposta.error || 'Não foi possível encerrar a transmissão.');
     });
-  }, [socket, joined, reconnecting, roomId, localStream, room?.presenterSocketId, onStopShare, roomClosed]);
+  }, [socket, joined, reconnecting, roomId, localStream, presenterIds, onStopShare, roomClosed]);
 
   useEffect(() => {
-    if (!socket || !joined || !roomId || reconnecting || !room?.isLive
-      || !room.presenterSocketId || peerRole !== 'viewer') return;
+    if (!socket || !joined || !roomId || reconnecting || !presenterIds) return;
     socket.emit('sala:espectador-pronto', { roomId });
-  }, [socket, joined, reconnecting, roomId, room?.isLive, room?.presenterSocketId, peerRole]);
+  }, [socket, joined, reconnecting, roomId, presenterIds]);
 
   async function entrar(codigo = code) {
     if (!socket) return false;
@@ -298,6 +395,7 @@ export default function StreamRoom({
     setYoutubeSource(resposta.youtubeSource || null);
     setYoutubePlayback(resposta.youtubePlayback || null);
     presenterPeerIdsRef.current = resposta.peerSocketIds || [];
+    hostSessionRef.current?.setViewers(presenterPeerIdsRef.current);
     joinedRef.current = true;
     setJoined(true);
     setNeedsCode(false);
@@ -305,15 +403,15 @@ export default function StreamRoom({
   }
 
   async function copiarLink() {
-    const url = new URL(window.location.href);
-    url.search = '';
-    url.searchParams.set('room', roomId);
     try {
-      await navigator.clipboard.writeText(url.toString());
+      await copyRoomInviteUrl(roomId, {
+        accessCode: room?.visibility === 'private' ? initialAccessCode || code : undefined,
+        publicWebUrl: import.meta.env.VITE_PUBLIC_WEB_URL,
+      });
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      setError('Não consegui copiar automaticamente. Copie o endereço desta sala pelo navegador.');
+      setError('Não foi possível copiar o link. Confira a área de transferência do sistema.');
     }
   }
 
@@ -434,7 +532,7 @@ export default function StreamRoom({
         setPseudoFullscreen(false);
         return;
       }
-      const video = remoteVideoRef.current;
+      const video = remoteVideoRef.current || localVideoRef.current;
       if (video?.webkitDisplayingFullscreen && typeof video.webkitExitFullscreen === 'function') {
         video.webkitExitFullscreen();
         return;
@@ -453,14 +551,27 @@ export default function StreamRoom({
     }
   }
 
+  async function pararDeAssistir() {
+    setRemoteAudioMuted(true);
+    setSelectedPresenterId(null);
+    selectionExplicitRef.current = false;
+    setSelectionDismissed(true);
+    setPseudoFullscreen(false);
+    if (typeof document !== 'undefined' && document.fullscreenElement === stageRef.current) {
+      try { await document.exitFullscreen?.(); }
+      catch { setError('Use o controle de tela cheia do navegador para sair.'); }
+    }
+  }
+
   const isRoomOwner = role === 'host';
-  const isCurrentPresenter = room?.presenterSocketId === socket?.id;
-  const occupiedByAnother = Boolean(room?.isLive && !isCurrentPresenter);
+  const isCurrentPresenter = shownPresenters.some((presenter) => presenter.socketId === socket?.id);
+  const roomFull = activePresenters.length + Number(Boolean(room?.reservedPresenterSlot)) >= 2 && !isCurrentPresenter;
   const hasActiveYoutubeSource = Boolean(youtubeSource?.videoId);
-  const presenterIsSeparateParticipant = Boolean(room?.presenterName && room.presenterName !== room.ownerName);
+  const separatePresenters = activePresenters.filter((presenter) => presenter.socketId !== room?.ownerSocketId
+    && presenter.name !== room?.ownerName);
   const currentViewerIsSeparateParticipant = role === 'viewer' && !isCurrentPresenter;
   const unlistedViewerCount = Math.max(0, Number(room?.viewerCount || 0)
-    - Number(presenterIsSeparateParticipant) - Number(currentViewerIsSeparateParticipant));
+    - separatePresenters.length - Number(currentViewerIsSeparateParticipant));
 
   if (role === 'viewer' && !joined && !roomClosed && !reconnecting) {
     return (
@@ -512,18 +623,18 @@ export default function StreamRoom({
         </div>
         <div className="stream-room-actions">
           {isRoomOwner && room?.visibility === 'private' && <span className="stream-room-code">Código: <strong>{initialAccessCode}</strong></span>}
-          {isRoomOwner && <button type="button" className="rooms-secondary-button" onClick={copiarLink}>{copied ? 'Link copiado' : 'Copiar link'}</button>}
+          <button type="button" className="rooms-secondary-button stream-room-copy" onClick={copiarLink}>{copied ? 'Link copiado' : 'Copiar link'}</button>
           {localStream || isCurrentPresenter
             ? <button type="button" className="rooms-danger-button" disabled={reconnecting} onClick={pararTransmissao}>Parar transmissão</button>
-            : <button type="button" className="rooms-primary-button" disabled={occupiedByAnother || reconnecting} title={occupiedByAnother ? 'A sala permite uma transmissão por vez.' : undefined} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : occupiedByAnother ? 'Outra pessoa está transmitindo' : 'Compartilhar tela'}</button>}
+            : <button type="button" className="rooms-primary-button" disabled={roomFull || hasActiveYoutubeSource || reconnecting} title={roomFull ? 'A sala permite até duas transmissões ao mesmo tempo.' : undefined} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : roomFull ? room?.reservedPresenterSlot ? 'Aguardando reconexão' : 'Duas pessoas transmitindo' : 'Compartilhar tela'}</button>}
         </div>
       </header>
 
       <div className="stream-room-workspace">
         <section ref={stageRef} className={`stream-stage${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`} aria-label="Tela transmitida">
-          {localStream ? <video ref={localVideoRef} autoPlay muted playsInline /> : remoteStream ? (
+          {selectedPresenter && selectedStream && selectedPresenterId === socket?.id ? <video data-stream-stage-video={true} ref={localVideoRef} autoPlay muted playsInline /> : selectedRemoteStream ? (
             <>
-              <video ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />
+              <video data-stream-stage-video={true} ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />
               {playbackNeedsGesture && <button type="button" className="stream-player-start" onClick={iniciarVideo}>Iniciar vídeo</button>}
               <div className="stream-player-controls" role="group" aria-label="Controles da transmissão">
                 {volumeSupported === true && <input type="range" className="stream-player-volume" min="0" max="100" value={Math.round(volume * 100)} onChange={ajustarVolume} aria-label="Volume da transmissão" />}
@@ -536,12 +647,12 @@ export default function StreamRoom({
                 <button type="button" className="stream-player-button" aria-label="Tela cheia" title="Tela cheia" onClick={alternarTelaCheia}>
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" /></svg>
                 </button>
-                <button type="button" className="stream-player-button stream-player-button--exit" aria-label="Parar de assistir" title="Parar de assistir" onClick={sair}>
+                <button type="button" className="stream-player-button stream-player-button--exit" aria-label="Parar de assistir" title="Voltar às transmissões" onClick={pararDeAssistir}>
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10 5.3a10.6 10.6 0 0 1 11 6.7 10.8 10.8 0 0 1-3.1 4.2M6.2 6.3A11 11 0 0 0 3 12c2.2 4.1 5.2 6 9 6 1.1 0 2.1-.2 3-.5" /><path d="M9.8 9.8a3.1 3.1 0 0 0 4.4 4.4" /></svg>
                 </button>
               </div>
             </>
-          ) : youtubeSource?.videoId ? (
+          ) : youtubeSource?.videoId && !shownPresenters.length ? (
             <YouTubeRoomPlayer
               videoId={youtubeSource.videoId}
               playback={youtubePlayback}
@@ -549,19 +660,43 @@ export default function StreamRoom({
             />
           ) : (
             <div className="stream-stage-empty" role="status" aria-live="polite">
-              {room?.isLive
+              {selectedPresenter && room?.isLive
                 ? <div className="stream-stage-empty__spinner" aria-hidden="true" />
                 : <div className="stream-stage-empty__icon" aria-hidden="true">◉</div>}
-              <h2>{room?.isLive ? 'Conectando à transmissão…' : 'Ninguém está transmitindo ainda'}</h2>
-              <p>{room?.isLive
-                ? `Transmitido por ${room?.presenterName || room?.ownerName || 'um participante da sala'}.`
-                : 'Seja a primeira pessoa a compartilhar sua tela com a sala.'}</p>
-              {!room?.isLive && <div className="stream-stage-empty__actions">
+              <h2>{selectedPresenter ? 'Conectando à transmissão…' : shownPresenters.length ? 'Escolha uma transmissão' : 'Ninguém está transmitindo ainda'}</h2>
+              <p>{selectedPresenter
+                ? `Transmitido por ${selectedPresenter.name || 'um participante da sala'}.`
+                : shownPresenters.length ? 'Selecione uma das miniaturas para assistir com áudio.' : 'Seja a primeira pessoa a compartilhar sua tela com a sala.'}</p>
+              {!shownPresenters.length && <div className="stream-stage-empty__actions">
                 <button type="button" className="rooms-primary-button" disabled={reconnecting} onClick={onRequestShare}>{reconnecting ? 'Reconectando…' : 'Compartilhar tela'}</button>
                 {isRoomOwner && <button type="button" className="rooms-secondary-button" onClick={abrirFonteYouTube}>Adicionar fonte de vídeo</button>}
               </div>}
             </div>
           )}
+          {selectedPresenter && <button type="button" className="stream-stage-back" aria-label="Voltar às transmissões" onClick={pararDeAssistir}>← Transmissões</button>}
+          {shownPresenters.length > 0 && <div className="stream-stage-tiles" role="group" aria-label="Transmissões da sala">
+            {shownPresenters.map((presenter) => {
+              const stream = presenter.socketId === socket?.id ? localStream : remoteStreams[presenter.socketId];
+              return <button
+                type="button"
+                key={presenter.socketId}
+                className={`stream-stage-tile${selectedPresenterId === presenter.socketId ? ' is-selected' : ''}`}
+                data-stream-tile={true}
+                aria-label={`Assistir transmissão de ${presenter.name || 'Participante'}`}
+                aria-pressed={selectedPresenterId === presenter.socketId}
+                onClick={() => { setRemoteAudioMuted(true); selectionExplicitRef.current = true; setSelectedPresenterId(presenter.socketId); setSelectionDismissed(false); }}
+              >
+                {stream
+                  ? <video data-stream-thumbnail={true} autoPlay muted playsInline ref={(node) => {
+                    if (!node) return;
+                    if (node.srcObject !== stream) node.srcObject = stream;
+                    Promise.resolve(node.play?.()).catch(() => {});
+                  }} />
+                  : <span className="stream-stage-tile__waiting">Conectando…</span>}
+                <span className="stream-stage-tile__label"><span className="stream-stage-tile__live" />{presenter.name || 'Participante'}</span>
+              </button>;
+            })}
+          </div>}
           {youtubeSource?.videoId && isRoomOwner && <button type="button" className="stream-source-remove" onClick={removerFonteYouTube}>Remover vídeo da sala</button>}
         </section>
 
@@ -576,11 +711,11 @@ export default function StreamRoom({
               <span className="stream-room-participants__identity"><strong>{room?.ownerName || (isRoomOwner ? 'Você' : 'Anfitrião')}</strong><small>Anfitrião</small></span>
               <span className="stream-room-participants__online" aria-label="online" />
             </li>
-            {presenterIsSeparateParticipant && <li>
-              <span className="stream-room-participants__avatar stream-room-participants__avatar--live" aria-hidden="true">{room.presenterName.trim().slice(0, 1).toUpperCase()}</span>
-              <span className="stream-room-participants__identity"><strong>{room.presenterName}</strong><small>Transmitindo agora</small></span>
+            {separatePresenters.map((presenter) => <li key={presenter.socketId}>
+              <span className="stream-room-participants__avatar stream-room-participants__avatar--live" aria-hidden="true">{(presenter.name || 'P').trim().slice(0, 1).toUpperCase()}</span>
+              <span className="stream-room-participants__identity"><strong>{presenter.name || 'Participante'}</strong><small>Transmitindo agora</small></span>
               <span className="stream-room-participants__online stream-room-participants__online--live" aria-label="transmitindo" />
-            </li>}
+            </li>)}
             {currentViewerIsSeparateParticipant && <li>
               <span className="stream-room-participants__avatar stream-room-participants__avatar--quiet" aria-hidden="true">V</span>
               <span className="stream-room-participants__identity"><strong>Você</strong><small>Na sala</small></span>
@@ -599,7 +734,7 @@ export default function StreamRoom({
         isSharing={Boolean(localStream || isCurrentPresenter)}
         hasYouTubeSource={hasActiveYoutubeSource}
         canManageSource={isRoomOwner}
-        shareDisabled={occupiedByAnother || hasActiveYoutubeSource}
+        shareDisabled={roomFull || hasActiveYoutubeSource}
         sourceDisabled={Boolean(room?.isLive)}
         disabled={reconnecting}
         onShare={onRequestShare}
@@ -608,7 +743,7 @@ export default function StreamRoom({
         onSettings={onOpenSettings}
         onFullscreen={alternarTelaCheia}
         onExit={sair}
-        exitLabel={isRoomOwner ? 'Encerrar sala' : 'Parar de assistir'}
+        exitLabel={isRoomOwner ? 'Encerrar sala' : 'Sair da sala'}
       />
       {youtubeDialogOpen && <div className="stream-youtube-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setYoutubeDialogOpen(false); }}>
         <section className="stream-youtube-dialog" role="dialog" aria-modal="true" aria-labelledby="stream-youtube-title">

@@ -46,7 +46,7 @@ afterEach(async () => {
   else globalThis.RTCPeerConnection = originalRTCPeerConnection;
 });
 
-async function renderViewer({ volumeWritable = true, nativeFullscreen = false, fullscreenRejects = false, nativeVideoFullscreen = false, room = { id: 'room-1', name: 'Partida', isLive: true }, entryRoom = room, requiredAccessCode = null, socketId = 'viewer-1', onRequestShare = () => {}, onStopShare = () => {}, localStream = null, joinedInitially = false, accessCode = '', role = 'viewer', deferRoomEntries = false } = {}) {
+async function renderViewer({ volumeWritable = true, nativeFullscreen = false, fullscreenRejects = false, nativeVideoFullscreen = false, room = { id: 'room-1', name: 'Partida', isLive: true, presenterSocketId: 'host-1', presenterName: 'Anfitrião' }, entryRoom = room, requiredAccessCode = null, socketId = 'viewer-1', onRequestShare = () => {}, onStopShare = () => {}, localStream = null, joinedInitially = false, accessCode = '', role = 'viewer', deferRoomEntries = false } = {}) {
   peerConnections = [];
   globalThis.RTCPeerConnection = FakePeerConnection;
   let playCalls = 0;
@@ -68,8 +68,20 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
   const socket = {
     id: socketId,
     connected: true,
-    on(event, listener) { listeners.set(event, listener); },
-    off(event, listener) { if (listeners.get(event) === listener) listeners.delete(event); },
+    on(event, listener) {
+      let dispatch = listeners.get(event);
+      if (!dispatch) {
+        dispatch = (...args) => Promise.all([...dispatch.handlers].map((handler) => handler(...args)));
+        dispatch.handlers = new Set();
+        listeners.set(event, dispatch);
+      }
+      dispatch.handlers.add(listener);
+    },
+    off(event, listener) {
+      const dispatch = listeners.get(event);
+      dispatch?.handlers.delete(listener);
+      if (dispatch?.handlers.size === 0) listeners.delete(event);
+    },
     emit(event, payload, callback) {
       emittedEvents.push(event);
       emittedPayloads.push({ event, payload });
@@ -101,13 +113,16 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
       onRequestShare,
       onStopShare,
       onExit() { exitCalls += 1; },
-    }), { createNodeMock: ({ type, props }) => type === 'video' ? videoNode : type === 'section' && props.className?.startsWith('stream-stage') ? stageNode : null });
+    }), { createNodeMock: ({ type, props }) => type === 'video'
+      ? props['data-stream-stage-video'] ? videoNode : { volume: 1, muted: true, srcObject: null, play: async () => {} }
+      : type === 'section' && props.className?.startsWith('stream-stage') ? stageNode : null });
   });
   renderers.push(renderer);
   if (room.isLive && room.presenterSocketId !== socketId) {
     await act(async () => {
       await listeners.get('sala:sinal:oferta')({
-        roomId: 'room-1', de: 'host-1', descricao: { type: 'offer', sdp: 'host-offer' },
+        roomId: 'room-1', de: room.presenterSocketId, streamId: room.presenterSocketId,
+        descricao: { type: 'offer', sdp: 'host-offer' },
       });
       peerConnections[0].ontrack({ streams: [{ getAudioTracks: () => [{ id: 'audio-1' }] }] });
     });
@@ -118,7 +133,7 @@ async function renderViewer({ volumeWritable = true, nativeFullscreen = false, f
 
 test('viewer media uses custom playback controls instead of native video controls', async () => {
   const { renderer } = await renderViewer();
-  const video = renderer.root.findByType('video');
+  const video = renderer.root.findByProps({ 'data-stream-stage-video': true });
   assert.equal(video.props.controls, undefined, 'native controls expose browser pause/play controls');
 });
 
@@ -152,7 +167,7 @@ test('viewer omits the volume slider when the browser ignores media volume chang
 
 test('viewer offers a play-only recovery if browser playback pauses', async () => {
   const { renderer, getPlayCalls } = await renderViewer();
-  const video = renderer.root.findByType('video');
+  const video = renderer.root.findByProps({ 'data-stream-stage-video': true });
   assert.equal(typeof video.props.onPause, 'function');
   await act(async () => video.props.onPause());
   const playButton = renderer.root.findAllByType('button').find((button) => /iniciar vídeo/i.test(button.children.join(' ')));
@@ -276,13 +291,17 @@ test('viewer uses the native video fullscreen API on iPhone Safari', async () =>
   }
 });
 
-test('viewer can stop watching and invokes the exit callback', async () => {
+test('viewer can stop watching one stream without leaving the room', async () => {
   const { renderer, getExitCalls } = await renderViewer();
   const exitButton = renderer.root.findAllByType('button').find((button) =>
-    /stop watching|parar de assistir|sair da sala/i.test(`${button.props['aria-label'] || ''} ${button.children.join(' ')}`));
+    /stop watching|parar de assistir/i.test(`${button.props['aria-label'] || ''} ${button.children.join(' ')}`));
   assert.ok(exitButton, 'viewer should have a stop-watching action');
   await act(async () => exitButton.props.onClick());
-  assert.equal(getExitCalls(), 1, 'stop-watching action should notify the parent to exit');
+  assert.equal(getExitCalls(), 0, 'stopping one stream keeps the viewer in the room');
+  assert.equal(renderer.root.findAll((node) => node.type === 'video' && node.props.muted === false).length, 0);
+  const leaveRoom = renderer.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Sair da sala');
+  await act(async () => leaveRoom.props.onClick());
+  assert.equal(getExitCalls(), 1);
 });
 
 test('a joined viewer can request screen sharing when the room is idle', async () => {
@@ -335,7 +354,7 @@ test('a transmitting member rejoins and restores the screen share after the sock
   assert.equal(emittedPayloads.find(({ event }) => event === 'salas:entrar').payload.accessCode, 'ROOM42');
   const restore = emittedPayloads.find(({ event, payload }) => event === 'salas:ao-vivo' && payload.isLive);
   assert.ok(restore, 'the captured screen should be announced again after rejoining');
-  assert.equal(renderer.root.findAllByType('video').length, 1, 'the local capture remains attached');
+  assert.ok(renderer.root.findByProps({ 'data-stream-stage-video': true }), 'the local capture remains attached');
 });
 
 test('a second socket interruption during room rejoin triggers another recovery attempt', async () => {
@@ -399,13 +418,13 @@ test('a viewer keeps a code entered in the room gate when the socket reconnects'
   assert.equal(renderer.root.findAllByProps({ children: 'Esta transmissão terminou' }).length, 0);
 });
 
-test('a member cannot replace another active presenter mid-stream', async () => {
+test('a member can share while only one other presenter is live', async () => {
   const { renderer } = await renderViewer({
     room: { id: 'room-1', name: 'Partida', isLive: true, presenterSocketId: 'other-presenter', presenterName: 'Alex' },
   });
   const shareButton = renderer.root.findAllByType('button').find((button) => /compartilhar tela|transmitindo/i.test(button.children.join(' ')));
-  assert.ok(shareButton, 'the sharing action should explain that the stage is occupied');
-  assert.equal(shareButton.props.disabled, true);
+  assert.ok(shareButton, 'a second participant should see the sharing action');
+  assert.equal(shareButton.props.disabled, false);
 });
 
 test('a member who is transmitting can stop their own screen share', async () => {

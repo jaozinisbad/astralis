@@ -246,25 +246,80 @@ test('screen room: qualquer membro anônimo ou autenticado pode iniciar e recebe
   assert.deepEqual(authenticatedStart.peerSocketIds, ['host-socket', 'anonymous-presenter']);
 });
 
-test('screen room: só um presenter ativo por sala e somente ele pode parar sua transmissão', () => {
+test('screen room: aceita dois presenters distintos, mantém legado do primeiro e rejeita o terceiro', () => {
   const manager = managerDeTeste();
   const created = criarSala(manager);
   manager.joinRoom({ roomId: created.room.id, socketId: 'presenter-one', userId: 2, userName: 'Ana' });
   manager.joinRoom({ roomId: created.room.id, socketId: 'presenter-two', userId: 3, userName: 'Bia' });
+  manager.joinRoom({ roomId: created.room.id, socketId: 'presenter-three', userId: 4, userName: 'Caio' });
 
-  const started = manager.setLive(created.room.id, 'presenter-one', true);
-  const competingStart = manager.setLive(created.room.id, 'presenter-two', true);
-  const competingStop = manager.setLive(created.room.id, 'presenter-two', false);
-  const hostStop = manager.setLive(created.room.id, 'host-socket', false);
+  const first = manager.setLive(created.room.id, 'presenter-one', true);
+  const second = manager.setLive(created.room.id, 'presenter-two', true);
+  const repeated = manager.setLive(created.room.id, 'presenter-one', true);
+  const third = manager.setLive(created.room.id, 'presenter-three', true);
 
-  assert.equal(started.ok, true);
-  assert.equal(competingStart.ok, false);
-  assert.equal(competingStart.presenterSocketId, 'presenter-one');
-  assert.equal(competingStop.ok, false);
-  assert.equal(hostStop.ok, false);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.deepEqual(second.presenters, [
+    { socketId: 'presenter-one', name: 'Ana' },
+    { socketId: 'presenter-two', name: 'Bia' },
+  ]);
+  assert.deepEqual(manager.getRoom(created.room.id).presenters, second.presenters);
+  assert.equal(second.presenterSocketId, 'presenter-one');
+  assert.equal(second.presenterName, 'Ana');
+  assert.deepEqual(repeated.presenters, second.presenters);
+  assert.equal(third.ok, false);
+  assert.deepEqual(manager.listPublicRooms()[0].presenters, second.presenters);
+
+  const joined = manager.joinRoom({ roomId: created.room.id, socketId: 'late-viewer' });
+  assert.deepEqual(joined.presenters, second.presenters);
+  assert.deepEqual(joined.peerSocketIds, ['presenter-one', 'presenter-two']);
+  assert.equal(manager.setLive(created.room.id, 'host-socket', false).ok, false);
+  const stoppedFirst = manager.setLive(created.room.id, 'presenter-one', false);
+  assert.equal(stoppedFirst.ok, true);
+  assert.equal(stoppedFirst.room.isLive, true);
+  assert.deepEqual(stoppedFirst.presenters, [{ socketId: 'presenter-two', name: 'Bia' }]);
+  assert.equal(stoppedFirst.presenterSocketId, 'presenter-two');
+  assert.equal(stoppedFirst.previousPresenterSocketId, 'presenter-one');
+  assert.equal(manager.setLive(created.room.id, 'presenter-three', true).ok, true);
+  assert.equal(manager.setLive(created.room.id, 'presenter-two', false).room.isLive, true);
+  assert.equal(manager.setLive(created.room.id, 'presenter-three', false).room.isLive, false);
+});
+
+test('screen room socket: stopping or disconnecting one presenter keeps the other live', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const first = socketDeTeste('first', { id: 2, nome: 'Ana' });
+  const second = socketDeTeste('second', { id: 3, nome: 'Bia' });
+  [host, first, second].forEach((member) => registrarSocket(member, io, manager));
+  const created = await acionar(host, 'salas:criar', { name: 'Duas telas', visibility: 'public' });
+  await acionar(first, 'salas:entrar', { roomId: created.room.id });
+  await acionar(second, 'salas:entrar', { roomId: created.room.id });
+  await acionar(first, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  const started = await acionar(second, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  assert.deepEqual(started.presenters, [
+    { socketId: first.id, name: 'Ana' }, { socketId: second.id, name: 'Bia' },
+  ]);
+  assert.ok(io.enviados.some(({ evento, dados }) => evento === 'sala:transmissao'
+    && dados.presenters?.length === 2 && dados.presenterSocketId === first.id));
+
+  io.enviados.length = 0;
+  const stopped = await acionar(first, 'salas:ao-vivo', { roomId: created.room.id, isLive: false });
+  assert.equal(stopped.room.isLive, true);
+  assert.deepEqual(stopped.presenters, [{ socketId: second.id, name: 'Bia' }]);
+  assert.ok(io.enviados.some(({ evento, dados }) => evento === 'sala:transmissao'
+    && dados.isLive === true && dados.previousPresenterSocketId === first.id
+    && dados.presenterSocketId === second.id && dados.presenters?.length === 1));
+
+  await acionar(first, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  io.enviados.length = 0;
+  first.handlers.get('disconnect')();
+  assert.deepEqual(manager.getRoom(created.room.id).presenters, [{ socketId: second.id, name: 'Bia' }]);
   assert.equal(manager.getRoom(created.room.id).isLive, true);
-  assert.equal(manager.setLive(created.room.id, 'presenter-one', false).ok, true);
-  assert.equal(manager.getRoom(created.room.id).isLive, false);
+  assert.ok(io.enviados.some(({ evento, dados }) => evento === 'sala:transmissao'
+    && dados.isLive === true && dados.previousPresenterSocketId === first.id
+    && dados.presenters?.[0]?.socketId === second.id));
 });
 
 test('screen room: rejeita estado de transmissão que não seja booleano', () => {
@@ -472,23 +527,30 @@ test('screen room: saída voluntária do presenter limpa o palco e mantém os ou
   const io = ioDeTeste();
   const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
   const presenter = socketDeTeste('presenter-socket', null, true);
+  const second = socketDeTeste('second-socket', { id: 2, nome: 'Bia' });
   registrarSocket(host, io, manager);
   registrarSocket(presenter, io, manager);
+  registrarSocket(second, io, manager);
   const created = await acionar(host, 'salas:criar', { name: 'Sessão', visibility: 'public' });
   await acionar(presenter, 'salas:entrar', { roomId: created.room.id });
+  await acionar(second, 'salas:entrar', { roomId: created.room.id });
   await acionar(presenter, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  await acionar(second, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
   io.enviados.length = 0;
 
   const left = await acionar(presenter, 'salas:sair');
 
   assert.equal(left.closed, false);
   assert.equal(left.transmissionStopped, true);
-  assert.equal(manager.getRoom(created.room.id).isLive, false);
+  assert.equal(manager.getRoom(created.room.id).isLive, true);
+  assert.deepEqual(manager.getRoom(created.room.id).presenters, [{ socketId: second.id, name: 'Bia' }]);
   assert.equal(manager.getSocketRole(host.id, created.room.id), 'host');
   assert.ok(io.enviados.some(({ destino, evento, dados }) => (
     destino === `sala-${created.room.id}`
     && evento === 'sala:transmissao'
-    && dados.isLive === false
+    && dados.isLive === true
+    && dados.presenterSocketId === second.id
+    && dados.presenters?.length === 1
     && dados.previousPresenterSocketId === presenter.id
     && dados.previousPresenterName === 'Visitante'
   )));
@@ -600,7 +662,9 @@ test('screen room socket: só retransmite oferta e resposta válidas entre peers
     roomId: created.room.id, para: 'viewer-socket', descricao: { type: 'offer', sdp: 'screen' },
   });
   assert.equal(oferta.ok, true);
-  assert.ok(io.enviados.some((item) => item.destino === 'viewer-socket' && item.evento === 'sala:sinal:oferta'));
+  assert.equal(oferta.streamId, host.id);
+  assert.ok(io.enviados.some((item) => item.destino === 'viewer-socket'
+    && item.evento === 'sala:sinal:oferta' && item.dados.streamId === host.id));
 
   const ofertaProibida = await acionar(viewer, 'sala:sinal:oferta', {
     roomId: created.room.id, para: 'host-socket', descricao: { type: 'offer' },
@@ -616,6 +680,9 @@ test('screen room socket: só retransmite oferta e resposta válidas entre peers
     roomId: created.room.id, para: 'host-socket', resposta: { type: 'answer', sdp: 'screen' },
   });
   assert.equal(resposta.ok, true);
+  assert.equal(resposta.streamId, host.id);
+  assert.ok(io.enviados.some((item) => item.destino === host.id
+    && item.evento === 'sala:sinal:resposta' && item.dados.streamId === host.id));
 });
 
 test('screen room socket: anfitrião se reconecta após oscilação e a transmissão é restaurada', async () => {
@@ -653,6 +720,150 @@ test('screen room socket: anfitrião se reconecta após oscilação e a transmis
   assert.equal(timers.timers.size, 0, 'reattach cancels the room expiry timer');
   timers.executar();
   assert.ok(manager.getRoom(created.room.id));
+});
+
+test('screen room socket: host reconnection restores only its stream beside the other presenter', async () => {
+  const timers = timersDeTeste();
+  const manager = managerDeTeste({
+    hostReconnectGraceMs: 15_000,
+    setTimeoutImpl: timers.setTimeout,
+    clearTimeoutImpl: timers.clearTimeout,
+  });
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const second = socketDeTeste('second', { id: 2, nome: 'Bia' });
+  const third = socketDeTeste('third', { id: 3, nome: 'Caio' });
+  [host, second, third].forEach((member) => registrarSocket(member, io, manager));
+  const created = await acionar(host, 'salas:criar', { name: 'Duas telas', visibility: 'public' });
+  await acionar(second, 'salas:entrar', { roomId: created.room.id });
+  await acionar(third, 'salas:entrar', { roomId: created.room.id });
+  await acionar(host, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  await acionar(second, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  io.enviados.length = 0;
+  host.handlers.get('disconnect')();
+
+  assert.equal(manager.getRoom(created.room.id).isLive, true);
+  assert.equal(manager.getRoom(created.room.id).reservedPresenterSlot, true);
+  assert.deepEqual(manager.getRoom(created.room.id).presenters, [{ socketId: second.id, name: 'Bia' }]);
+  assert.equal(manager.setLive(created.room.id, third.id, true).ok, false);
+  assert.ok(io.enviados.some(({ evento, dados }) => evento === 'sala:transmissao'
+    && dados.isLive === true && dados.previousPresenterSocketId === host.id
+    && dados.presenters?.[0]?.socketId === second.id));
+
+  const replacement = socketDeTeste('host-new', { id: 1, nome: 'Anfitrião' });
+  registrarSocket(replacement, io, manager);
+  const joined = await acionar(replacement, 'salas:entrar', { roomId: created.room.id });
+  assert.equal(joined.role, 'host');
+  assert.deepEqual(joined.presenters, [
+    { socketId: replacement.id, name: 'Anfitrião' },
+    { socketId: second.id, name: 'Bia' },
+  ]);
+  assert.equal(joined.room.reservedPresenterSlot, false);
+  assert.equal(joined.presenterSocketId, replacement.id);
+  assert.equal(timers.timers.size, 0);
+  assert.ok(io.enviados.some(({ evento, dados }) => evento === 'sala:transmissao'
+    && dados.presenters?.length === 2 && dados.presenterSocketId === replacement.id));
+});
+
+test('screen room socket: entrada e spectator-ready avisam os dois presenters', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const first = socketDeTeste('first', { id: 2, nome: 'Ana' });
+  const second = socketDeTeste('second', { id: 3, nome: 'Bia' });
+  const viewer = socketDeTeste('viewer', null, true);
+  [host, first, second, viewer].forEach((member) => registrarSocket(member, io, manager));
+  const created = await acionar(host, 'salas:criar', { name: 'Duas telas', visibility: 'public' });
+  await acionar(first, 'salas:entrar', { roomId: created.room.id });
+  await acionar(second, 'salas:entrar', { roomId: created.room.id });
+  await acionar(first, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  await acionar(second, 'salas:ao-vivo', { roomId: created.room.id, isLive: true });
+  io.enviados.length = 0;
+
+  const joined = await acionar(viewer, 'salas:entrar', { roomId: created.room.id });
+  assert.deepEqual(joined.peerSocketIds, [first.id, second.id]);
+  assert.deepEqual(joined.presenters, [
+    { socketId: first.id, name: 'Ana' }, { socketId: second.id, name: 'Bia' },
+  ]);
+  for (const presenter of [first, second]) {
+    assert.ok(io.enviados.some(({ destino, evento, dados }) => destino === presenter.id
+      && evento === 'sala:espectador-entrou' && dados.socketId === viewer.id));
+  }
+  io.enviados.length = 0;
+  const ready = await acionar(viewer, 'sala:espectador-pronto', { roomId: created.room.id });
+  assert.equal(ready.ok, true);
+  assert.deepEqual(ready.presenters, joined.presenters);
+  for (const presenter of [first, second]) {
+    assert.ok(io.enviados.some(({ destino, evento, dados }) => destino === presenter.id
+      && evento === 'sala:espectador-entrou' && dados.socketId === viewer.id));
+  }
+});
+
+test('screen room: streamId separates signaling for two presenters', async () => {
+  const manager = managerDeTeste();
+  const io = ioDeTeste();
+  const host = socketDeTeste('host-socket', { id: 1, nome: 'Anfitrião' });
+  const first = socketDeTeste('first', { id: 2, nome: 'Ana' });
+  const second = socketDeTeste('second', { id: 3, nome: 'Bia' });
+  const viewer = socketDeTeste('viewer', null, true);
+  const outsider = socketDeTeste('outsider', { id: 4, nome: 'Fora' });
+  [host, first, second, viewer, outsider].forEach((member) => registrarSocket(member, io, manager));
+  const room = await acionar(host, 'salas:criar', { name: 'Duas telas', visibility: 'public' });
+  await acionar(outsider, 'salas:criar', { name: 'Outra', visibility: 'public' });
+  for (const member of [first, second, viewer]) await acionar(member, 'salas:entrar', { roomId: room.room.id });
+  await acionar(first, 'salas:ao-vivo', { roomId: room.room.id, isLive: true });
+  await acionar(second, 'salas:ao-vivo', { roomId: room.room.id, isLive: true });
+  io.enviados.length = 0;
+
+  const valid = [
+    [first, 'oferta', viewer, 'descricao', first.id],
+    [second, 'oferta', viewer, 'descricao', second.id],
+    [viewer, 'resposta', first, 'resposta', first.id],
+    [viewer, 'resposta', second, 'resposta', second.id],
+    [first, 'candidato', viewer, 'candidato', first.id],
+    [viewer, 'candidato', second, 'candidato', second.id],
+  ];
+  for (const [from, type, to, key, streamId] of valid) {
+    const result = await acionar(from, `sala:sinal:${type}`, {
+      roomId: room.room.id, para: to.id, streamId, [key]: { value: type },
+    });
+    assert.equal(result.ok, true, `${type} for ${streamId}`);
+    assert.ok(io.enviados.some(({ destino, evento, dados }) => destino === to.id
+      && evento === `sala:sinal:${type}` && dados.streamId === streamId && dados.de === from.id));
+  }
+
+  const legacyOffer = await acionar(first, 'sala:sinal:oferta', {
+    roomId: room.room.id, para: viewer.id, descricao: { type: 'offer', sdp: 'legacy-first' },
+  });
+  const legacyAnswer = await acionar(viewer, 'sala:sinal:resposta', {
+    roomId: room.room.id, para: second.id, resposta: { type: 'answer', sdp: 'legacy-second' },
+  });
+  const legacyCandidate = await acionar(viewer, 'sala:sinal:candidato', {
+    roomId: room.room.id, para: second.id, candidato: { candidate: 'legacy-second-ice' },
+  });
+  assert.equal(legacyOffer.streamId, first.id);
+  assert.equal(legacyAnswer.streamId, second.id);
+  assert.equal(legacyCandidate.streamId, second.id);
+
+  const rejected = [
+    [first, 'oferta', viewer, 'descricao', second.id],
+    [viewer, 'resposta', first, 'resposta', second.id],
+    [viewer, 'candidato', first, 'candidato', second.id],
+    [first, 'oferta', outsider, 'descricao', first.id],
+    [outsider, 'resposta', first, 'resposta', first.id],
+    [first, 'oferta', viewer, 'descricao', 'missing'],
+  ];
+  for (const [from, type, to, key, streamId] of rejected) {
+    io.enviados.length = 0;
+    const result = await acionar(from, `sala:sinal:${type}`, {
+      roomId: room.room.id, para: to.id, ...(streamId === undefined ? {} : { streamId }),
+      [key]: { value: type },
+    });
+    assert.equal(result.ok, false, `${type} from ${from.id} to ${to.id} for ${streamId}`);
+    assert.equal(io.enviados.some(({ evento }) => evento.startsWith('sala:sinal:')), false);
+  }
+  assert.equal(manager.canSignal({ roomId: room.room.id, fromSocketId: first.id,
+    toSocketId: viewer.id, signalType: 'offer', streamId: second.id }), false);
 });
 
 test('screen room socket: saída definitiva do anfitrião após o prazo encerra sala e remove espectadores', async () => {
@@ -939,12 +1150,17 @@ test('YouTube por sala: apenas anfitrião define fonte e videoId aceita exatamen
 test('YouTube e compartilhamento de tela não ocupam o palco ao mesmo tempo', () => {
   const manager = managerDeTeste();
   const created = criarSala(manager);
+  manager.joinRoom({ roomId: created.room.id, socketId: 'second' });
 
   assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', 'dQw4w9WgXcQ').ok, true);
   assert.equal(manager.setLive(created.room.id, 'host-socket', true).ok, false);
   assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', null).ok, true);
   assert.equal(manager.setLive(created.room.id, 'host-socket', true).ok, true);
+  assert.equal(manager.setLive(created.room.id, 'second', true).ok, true);
+  assert.equal(manager.setLive(created.room.id, 'host-socket', false).room.isLive, true);
   assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', 'dQw4w9WgXcQ').ok, false);
+  assert.equal(manager.setLive(created.room.id, 'second', false).room.isLive, false);
+  assert.equal(manager.setYoutubeSource(created.room.id, 'host-socket', 'dQw4w9WgXcQ').ok, true);
 });
 
 test('YouTube por sala: membros controlam playback com ações e tempos limitados', async () => {

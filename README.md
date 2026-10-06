@@ -30,7 +30,7 @@ O aplicativo verifica atualizações ao iniciar e avisa quando uma atualização
 
 ### No navegador e no celular
 
-Abra [astralis-b2w.pages.dev](https://astralis-b2w.pages.dev). Você pode entrar nas salas como visitante, sem criar uma conta. Para criar uma sala, entre na sua conta. Visitantes também podem compartilhar tela em um computador compatível quando o palco está livre.
+Abra [astralis-b2w.pages.dev](https://astralis-b2w.pages.dev). Você pode entrar nas salas como visitante, sem criar uma conta. Para criar uma sala, entre na sua conta. Visitantes também podem compartilhar tela em um computador compatível quando houver uma vaga livre de transmissão.
 
 No iPhone ou Android, abra o link recebido pelo navegador. O uso no celular é voltado a assistir; para compartilhar a tela, use um computador com o app Windows ou um navegador que ofereça captura de tela.
 
@@ -43,11 +43,11 @@ No iPhone ou Android, abra o link recebido pelo navegador. O uso no celular é v
    - **Privada:** a entrada exige o código de acesso e a sala fica fora da lista pública.
 
 3. Clique em **Criar sala**.
-4. Com a sala aberta no site, use **Copiar link** para enviar o convite. Em salas privadas, envie também o código que aparece para o anfitrião: ele não vem incluído no link.
+4. Com a sala aberta no site ou no app Windows, use **Copiar link** para enviar o convite. O link de uma sala privada já inclui o código de acesso; compartilhe-o somente com as pessoas que você quer convidar.
 
 Para entrar em uma sala privada sem o link, use **Entrar com código de convite** na tela inicial e digite somente o código. Não é necessário informar o ID da sala.
 
-Se você criou uma sala privada pelo app Windows, também pode convidar amigos enviando o [endereço do site](https://astralis-b2w.pages.dev) e o código. Eles entram pela opção **Entrar com código de convite**.
+Se preferir, compartilhe apenas o código privado. Seus amigos entram pela opção **Entrar com código de convite**.
 
 O anfitrião é quem criou a sala. Ele pode encerrá-la para todos; os demais participantes podem sair sem encerrar a sala. Para o anfitrião, voltar por **← Salas** também encerra a sala.
 
@@ -61,7 +61,7 @@ Uma sala pública aguardando conteúdo ou reproduzindo apenas YouTube não apare
 4. Clique em **Compartilhar**. No navegador, escolha a fonte no seletor que aparecer; autorize a captura quando solicitado.
 5. Ao terminar, use **Parar transmissão** ou o botão de parar compartilhamento na barra inferior.
 
-Qualquer participante, inclusive visitante, pode transmitir quando o palco está livre. A sala aceita uma transmissão de tela por vez: quem estiver transmitindo precisa parar antes de outra pessoa começar. Parar o compartilhamento mantém a sala aberta.
+Qualquer participante, inclusive visitante, pode transmitir quando houver uma vaga livre. A sala aceita **até duas transmissões de tela simultâneas**; uma terceira pessoa precisa aguardar alguém parar. Cada transmissor controla somente a própria tela. Parar o compartilhamento mantém a sala e a outra transmissão abertas.
 
 ### Qualidade da transmissão
 
@@ -87,9 +87,9 @@ Ao compartilhar um monitor pelo app Windows, existe a opção experimental **Nã
 
 ## Assistir a uma transmissão
 
-Entre pela lista de salas públicas, pelo link de convite ou pelo código de uma sala privada. A imagem aparece no palco quando alguém começa a transmitir.
+Entre pela lista de salas públicas, pelo link de convite ou pelo código de uma sala privada. As transmissões aparecem em miniaturas no canto superior esquerdo da sala. Clique ou toque em uma miniatura para ampliá-la no palco; quando houver duas, você pode alternar entre elas sem sair da sala.
 
-A transmissão recebida começa silenciada. Use **Ativar áudio** para ouvir o som compartilhado. Os controles do player permitem silenciar o áudio, ajustar o volume onde o navegador oferece suporte, abrir uma janela flutuante (picture-in-picture), entrar em tela cheia e **Parar de assistir**. Não há botão de pausa para a transmissão ao vivo.
+A transmissão selecionada começa silenciada. Use **Ativar áudio** para ouvir o som compartilhado. As miniaturas e a transmissão que não estiver selecionada ficam sempre sem áudio; ao trocar de vídeo, o novo também começa silenciado para evitar sobreposição. Os controles do player permitem ajustar o volume onde o navegador oferece suporte, abrir uma janela flutuante (picture-in-picture), entrar em tela cheia e **Parar de assistir**. Esse último controle volta à seleção de transmissões sem sair da sala. Não há botão de pausa para a transmissão ao vivo.
 
 Se aparecer **Iniciar vídeo**, toque nesse botão para liberar a reprodução. No iPhone, o volume é controlado pelos botões do aparelho; a tela cheia da transmissão pode usar o player nativo do Safari, com os controles do iOS. A janela flutuante depende do suporte do navegador.
 
@@ -136,6 +136,8 @@ VITE_SERVER_URL=http://localhost:3001
 ```
 
 Essa variável é importante: vazia ou ausente, o cliente usa o backend publicado no Render. Seu valor é público e deve conter somente a URL do backend.
+
+Opcionalmente, defina `VITE_PUBLIC_WEB_URL` com o endereço HTTPS público do site se quiser gerar convites em outro domínio. Sem essa variável, o app Windows usa `https://astralis-b2w.pages.dev` nos links copiados.
 
 Em um terminal, na raiz do repositório, inicie o servidor:
 

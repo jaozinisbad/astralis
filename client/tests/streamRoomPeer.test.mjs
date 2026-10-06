@@ -5,10 +5,16 @@ import { createStreamRoomPeerSession } from '../src/streamRoomPeer.mjs';
 class FakeSocket {
   listeners = new Map();
   sent = [];
-  on(event, listener) { this.listeners.set(event, listener); }
-  off(event, listener) { if (this.listeners.get(event) === listener) this.listeners.delete(event); }
+  on(event, listener) {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event).add(listener);
+  }
+  off(event, listener) {
+    this.listeners.get(event)?.delete(listener);
+    if (this.listeners.get(event)?.size === 0) this.listeners.delete(event);
+  }
   emit(event, payload) { this.sent.push({ event, payload }); }
-  receive(event, payload) { this.listeners.get(event)?.(payload); }
+  receive(event, payload) { this.listeners.get(event)?.forEach((listener) => listener(payload)); }
 }
 
 class FakePeerConnection {
@@ -35,6 +41,96 @@ class FakePeerConnection {
 function makeStream() {
   return { getTracks: () => [{ kind: 'video', id: 'screen-track' }] };
 }
+
+test('stream peer: two viewer sessions on one socket keep offers, ICE, and remote streams separate', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const remote = [];
+  const viewerA = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'viewer', streamId: 'host-a', onRemoteStream: (peerId, stream) => remote.push(['a', peerId, stream]), RTCPeerConnectionImpl: FakePeerConnection });
+  const viewerB = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'viewer', streamId: 'host-b', onRemoteStream: (peerId, stream) => remote.push(['b', peerId, stream]), RTCPeerConnectionImpl: FakePeerConnection });
+
+  socket.receive('sala:sinal:candidato', { roomId: 'room-1', streamId: 'host-b', de: 'host-b', candidato: { candidate: 'b-early' } });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', streamId: 'host-a', de: 'host-a', descricao: { type: 'offer', sdp: 'a-offer' } });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', streamId: 'host-b', de: 'host-b', descricao: { type: 'offer', sdp: 'b-offer' } });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', streamId: 'host-a', de: 'host-b', descricao: { type: 'offer', sdp: 'wrong-broadcast' } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(viewerA.getPeerCount(), 1);
+  assert.equal(viewerB.getPeerCount(), 1);
+  assert.deepEqual(FakePeerConnection.instances.map((peer) => peer.remoteDescription?.sdp).sort(), ['a-offer', 'b-offer']);
+  const peerA = FakePeerConnection.instances.find((peer) => peer.remoteDescription?.sdp === 'a-offer');
+  const peerB = FakePeerConnection.instances.find((peer) => peer.remoteDescription?.sdp === 'b-offer');
+  assert.deepEqual(peerB.addedCandidates, [{ candidate: 'b-early' }]);
+  assert.deepEqual(socket.sent.filter(({ event }) => event === 'sala:sinal:resposta').map(({ payload }) => [payload.para, payload.streamId]).sort(), [['host-a', 'host-a'], ['host-b', 'host-b']]);
+
+  const streamA = { id: 'screen-a' };
+  const streamB = { id: 'screen-b' };
+  peerA.ontrack({ streams: [streamA] });
+  peerB.ontrack({ streams: [streamB] });
+  assert.deepEqual(remote, [['a', 'host-a', streamA], ['b', 'host-b', streamB]]);
+
+  viewerA.close();
+  assert.equal(viewerB.getPeerCount(), 1);
+  socket.receive('sala:sinal:candidato', { roomId: 'room-1', streamId: 'host-b', de: 'host-b', candidato: { candidate: 'b-late' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(peerB.addedCandidates, [{ candidate: 'b-early' }, { candidate: 'b-late' }]);
+  viewerB.close();
+  assert.equal(socket.listeners.size, 0);
+});
+
+test('stream peer: configured host isolates tagged signals and accepts old server replies', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  socket.id = 'host-a';
+  const host = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'host', streamId: 'host-a', RTCPeerConnectionImpl: FakePeerConnection });
+  host.setLocalStream(makeStream());
+  await host.setViewers(['viewer-a']);
+  const peer = FakePeerConnection.instances[0];
+
+  assert.equal(socket.sent.find(({ event }) => event === 'sala:sinal:oferta').payload.streamId, 'host-a');
+  peer.onicecandidate({ candidate: { candidate: 'host-ice' } });
+  assert.equal(socket.sent.find(({ event }) => event === 'sala:sinal:candidato').payload.streamId, 'host-a');
+
+  socket.receive('sala:sinal:candidato', { roomId: 'room-1', streamId: 'host-b', de: 'viewer-a', candidato: { candidate: 'wrong-ice' } });
+  socket.receive('sala:sinal:resposta', { roomId: 'room-1', streamId: 'host-b', de: 'viewer-a', resposta: { type: 'answer', sdp: 'wrong-answer' } });
+  socket.receive('sala:sinal:candidato', { roomId: 'room-1', de: 'viewer-a', candidato: { candidate: 'legacy-ice' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(peer.remoteDescription, null);
+  assert.deepEqual(peer.addedCandidates, []);
+
+  socket.receive('sala:sinal:candidato', { roomId: 'room-1', streamId: 'host-a', de: 'viewer-a', candidato: { candidate: 'host-a-ice' } });
+  socket.receive('sala:sinal:resposta', { roomId: 'room-1', de: 'viewer-a', resposta: { type: 'answer', sdp: 'host-a-answer' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(peer.remoteDescription.sdp, 'host-a-answer');
+  assert.deepEqual(peer.addedCandidates, [{ candidate: 'legacy-ice' }, { candidate: 'host-a-ice' }]);
+  host.close();
+});
+
+test('stream peer: configured viewer accepts untagged offer only from its presenter', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const viewer = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'viewer', streamId: 'host-a', RTCPeerConnectionImpl: FakePeerConnection });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', de: 'host-b', descricao: { type: 'offer', sdp: 'wrong' } });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', de: 'host-a', descricao: { type: 'offer', sdp: 'legacy' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(viewer.getPeerCount(), 1);
+  assert.equal(FakePeerConnection.instances[0].remoteDescription.sdp, 'legacy');
+  assert.equal(socket.sent.find(({ event }) => event === 'sala:sinal:resposta').payload.streamId, 'host-a');
+  viewer.close();
+});
+
+test('stream peer: unconfigured legacy session accepts only untagged signals', async () => {
+  FakePeerConnection.instances = [];
+  const socket = new FakeSocket();
+  const legacy = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'viewer', RTCPeerConnectionImpl: FakePeerConnection });
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', streamId: 'host-a', de: 'host-a', descricao: { type: 'offer', sdp: 'tagged' } });
+  assert.equal(legacy.getPeerCount(), 0);
+  socket.receive('sala:sinal:oferta', { roomId: 'room-1', de: 'host-a', descricao: { type: 'offer', sdp: 'legacy' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(FakePeerConnection.instances[0].remoteDescription.sdp, 'legacy');
+  assert.equal(Object.hasOwn(socket.sent.find(({ event }) => event === 'sala:sinal:resposta').payload, 'streamId'), false);
+  legacy.close();
+});
 
 test('stream peer: host creates offers only for viewers in its room', async () => {
   FakePeerConnection.instances = [];
