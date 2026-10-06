@@ -37,6 +37,30 @@ O endpoint `/` serve como health check. Após configurar banco e publicar,
 valide login com a conta existente, leitura de mensagens, envio de mensagem,
 conexão Socket.IO e acesso a partir de dois clientes.
 
+### Evitar reinícios por alterações fora do backend
+
+Em **Settings → Build → Build Filters**, mantenha estes **Included Paths**,
+relativos à raiz do repositório:
+
+```text
+server/**
+render.yaml
+```
+
+O mesmo filtro já está declarado em `render.yaml`. Em um serviço criado pelo
+Dashboard sem sincronização por Blueprint, alterar o YAML não atualiza as
+configurações do serviço: confira e salve o filtro também no painel.
+
+Assim, mudanças no README, nas demais documentações e no cliente não acionam
+um deploy automático do backend. Mudanças no servidor continuam acionando.
+As salas ficam na memória do processo e são perdidas quando a instância é
+substituída; planeje os deploys do backend para fora das transmissões em uso.
+
+Em 05/10/2026, o filtro foi aplicado ao serviço existente depois de confirmar
+nos logs que pushes de documentação haviam reiniciado a instância e
+desconectado os participantes. Essa configuração evita esses deploys
+desnecessários, mas não impede reinícios da plataforma ou falhas de rede.
+
 ## Cliente Electron
 
 Configure `VITE_SERVER_URL` em `client/.env.local` com a URL do backend Render.
