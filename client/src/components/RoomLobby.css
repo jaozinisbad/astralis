@@ -102,7 +102,8 @@
 }
 
 .room-lobby__profile:hover { border-color: var(--lobby-border); background: rgba(255, 255, 255, .045); }
-.room-lobby__profile-avatar { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 50%; color: #e9e3ff; background: linear-gradient(135deg, #7663df, #3c8290); font-size: 10px; font-weight: 800; }
+.room-lobby__profile-avatar { width: 29px; height: 29px; flex: 0 0 29px; display: block; overflow: hidden; border-radius: 50%; }
+.room-lobby__profile-avatar .avatar { border-radius: 50%; }
 .room-lobby__profile-name { max-width: 150px; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .room-lobby__profile-chevron { margin-top: -4px; color: #7f8aa5; font-size: 18px; }
 .room-lobby__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
