@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SERVER_URL } from '../api.js';
 
 export default function LoginScreen({ onAutenticado }) {
@@ -8,6 +8,29 @@ export default function LoginScreen({ onAutenticado }) {
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
+  const [demorando, setDemorando] = useState(false);
+
+  useEffect(() => {
+    // Uma chamada por abertura da tela, sem polling para manter o servidor ativo.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90_000);
+    fetch(`${SERVER_URL}/health`, { signal: controller.signal })
+      .catch(() => {})
+      .finally(() => clearTimeout(timeout));
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!carregando) {
+      setDemorando(false);
+      return;
+    }
+    const timeout = setTimeout(() => setDemorando(true), 4000);
+    return () => clearTimeout(timeout);
+  }, [carregando]);
 
   async function enviar(event) {
     event.preventDefault();
@@ -15,9 +38,12 @@ export default function LoginScreen({ onAutenticado }) {
     setCarregando(true);
 
     const cadastro = modo === 'cadastro';
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90_000);
     try {
       const resposta = await fetch(`${SERVER_URL}${cadastro ? '/api/cadastro' : '/api/login'}`, {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cadastro ? { nome, email, senha } : { email, senha }),
       });
@@ -27,9 +53,12 @@ export default function LoginScreen({ onAutenticado }) {
         return;
       }
       onAutenticado(dados.token, dados.usuario);
-    } catch {
-      setErro('Não foi possível conectar ao servidor. Confira sua internet e tente novamente.');
+    } catch (error) {
+      setErro(error.name === 'AbortError'
+        ? 'O servidor demorou para responder. Tente novamente em alguns instantes.'
+        : 'Não foi possível conectar ao servidor. Confira sua internet e tente novamente.');
     } finally {
+      clearTimeout(timeout);
       setCarregando(false);
     }
   }
@@ -103,6 +132,10 @@ export default function LoginScreen({ onAutenticado }) {
           </label>
 
           {erro && <div className="auth-error" role="alert">{erro}</div>}
+
+          {carregando && demorando && (
+            <p role="status">A conexão está demorando. O servidor pode estar iniciando após um período sem uso. Aguarde mais alguns instantes.</p>
+          )}
 
           <button className="auth-submit" type="submit" disabled={carregando}>
             {carregando ? 'Aguarde…' : cadastro ? 'Criar conta' : 'Entrar'}

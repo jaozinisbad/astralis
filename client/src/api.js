@@ -16,9 +16,16 @@ export async function apiFetch(caminho, token, opcoes = {}) {
   });
   const dados = await resp.json().catch(() => ({}));
   if (!resp.ok) {
-    const erro = new Error(dados.erro || (resp.status === 401 || resp.status === 403 ? 'Sua sessão expirou. Entre novamente.' : 'Erro ao falar com o servidor.'));
+    const sessaoInvalida = resp.status === 401 || (
+      resp.status === 403 && dados.erro === 'Token inválido ou expirado.'
+    ); // Compatibilidade com versões antigas do backend.
+    const erro = new Error(dados.erro || (sessaoInvalida
+      ? 'Sua sessão expirou. Entre novamente.'
+      : resp.status === 403 ? 'Você não tem permissão para esta ação.' : 'Erro ao falar com o servidor.'));
     erro.status = resp.status;
-    if (resp.status === 401 || resp.status === 403) {
+    // Apenas uma chamada que enviou credenciais pode invalidar a sessão.
+    // 403 também é usado para negar permissões e deve preservar o login.
+    if (token && sessaoInvalida) {
       localStorage.removeItem('sessao');
       window.dispatchEvent(new Event('sessao-invalida'));
     }

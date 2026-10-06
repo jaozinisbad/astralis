@@ -15,7 +15,8 @@ before(async () => {
     configFile: false,
     root,
     plugins: [react()],
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true, include: [] },
     appType: 'custom',
   });
   ({ default: ServerSidebar } = await vite.ssrLoadModule('/src/components/ServerSidebar.jsx'));
