@@ -70,7 +70,7 @@ export default function App() {
   const [servidorConfiguracaoAberto, setServidorConfiguracaoAberto] = useState(false);
   const [criacaoCanal, setCriacaoCanal] = useState(null);
   const [pickerTelaAberto, setPickerTelaAberto] = useState(false);
-  const [atualizacaoPronta, setAtualizacaoPronta] = useState(false);
+  const [estadoAtualizacao, setEstadoAtualizacao] = useState(null);
 
   // view: 'servidor' | 'amigos' | 'dm'
   const [view, setView] = useState('salas');
@@ -82,11 +82,20 @@ export default function App() {
   // pré-visualização de participantes mesmo sem você estar na call.
   const [presencaVoz, setPresencaVoz] = useState({});
 
-  // Escuta o aviso do processo main quando uma atualização já foi
-  // baixada e está pronta pra instalar (só existe rodando empacotado).
+  // Mostra o andamento, erros e a atualização pronta, mesmo se o evento
+  // ocorreu antes de o componente registrar seu listener.
   useEffect(() => {
-    if (!window.electronAPI?.onAtualizacaoPronta) return;
-    window.electronAPI.onAtualizacaoPronta(() => setAtualizacaoPronta(true));
+    const api = window.electronAPI;
+    if (!api?.onAtualizacaoStatus) return undefined;
+    let ativo = true;
+    const removerListener = api.onAtualizacaoStatus(setEstadoAtualizacao);
+    api.obterStatusAtualizacao?.()
+      .then((status) => { if (ativo) setEstadoAtualizacao(status); })
+      .catch(() => {});
+    return () => {
+      ativo = false;
+      removerListener?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -649,12 +658,23 @@ export default function App() {
   return (
     <>
       <div className={`app${vozEstado.telaSelecionadaId ? ' app--transmissao-aberta' : ''}`}>
-      {atualizacaoPronta && (
-        <div className="atualizacao-banner">
-          <span>Uma atualização foi baixada.</span>
-          <button type="button" onClick={() => window.electronAPI.reiniciarParaAtualizar()}>
-            Reiniciar agora
-          </button>
+      {['available', 'downloading', 'downloaded', 'error'].includes(estadoAtualizacao?.status) && (
+        <div
+          className={'atualizacao-banner' + (estadoAtualizacao.status === 'error' ? ' atualizacao-banner--erro' : '')}
+          role={estadoAtualizacao.status === 'error' ? 'alert' : 'status'}
+          aria-live="polite"
+        >
+          <span>{estadoAtualizacao.message}</span>
+          {estadoAtualizacao.status === 'downloaded' && (
+            <button type="button" onClick={() => window.electronAPI?.reiniciarParaAtualizar?.()}>
+              Reiniciar agora
+            </button>
+          )}
+          {estadoAtualizacao.status === 'error' && (
+            <button type="button" onClick={() => window.electronAPI?.verificarAtualizacao?.()}>
+              Tentar novamente
+            </button>
+          )}
         </div>
       )}
       <ServerSidebar

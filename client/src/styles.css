@@ -161,6 +161,10 @@ button, input, textarea, select {
   font-size: 13px;
 }
 
+.atualizacao-banner--erro {
+  background: #9b3636;
+}
+
 .atualizacao-banner button {
   background: #fff;
   color: #248046;

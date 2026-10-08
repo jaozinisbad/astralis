@@ -8,19 +8,22 @@ import {
   resolveStreamQuality,
 } from '../src/streamQuality.mjs';
 
-test('stream quality: default capture requests full HD at 60 fps and permits 16 Mbps per viewer', () => {
+test('stream quality: default capture uses a bounded adaptive bitrate at full HD 30 fps', () => {
   const constraints = getCaptureConstraints();
   const encoding = getVideoEncodingParameters({}, 3);
 
   assert.deepEqual(constraints.video.width, { ideal: 1920, max: 1920 });
   assert.deepEqual(constraints.video.height, { ideal: 1080, max: 1080 });
-  assert.deepEqual(constraints.video.frameRate, { ideal: 60, max: 60 });
-  assert.equal(encoding.maxBitrate, 16_000_000);
-  assert.ok(STREAM_QUALITY_OPTIONS.bitrates.includes(16_000_000));
+  assert.deepEqual(constraints.video.frameRate, { ideal: 30, max: 30 });
+  assert.equal(encoding.maxBitrate, Math.floor(4_000_000 / 3));
+  assert.ok(STREAM_QUALITY_OPTIONS.bitrates.includes(4_000_000));
   assert.equal(DEFAULT_STREAM_QUALITY.resolution, '1080p');
-  assert.equal(DEFAULT_STREAM_QUALITY.fps, 60);
-  assert.equal(DEFAULT_STREAM_QUALITY.bitrate, 16_000_000);
-  assert.equal(DEFAULT_STREAM_QUALITY.adaptiveQuality, false);
+  assert.equal(DEFAULT_STREAM_QUALITY.fps, 30);
+  assert.equal(DEFAULT_STREAM_QUALITY.bitrate, 4_000_000);
+  assert.equal(DEFAULT_STREAM_QUALITY.adaptiveQuality, true);
+  assert.equal(DEFAULT_STREAM_QUALITY.contentType, 'motion');
+  assert.equal(resolveStreamQuality().contentType, 'motion');
+  assert.equal(encoding.degradationPreference, 'maintain-framerate');
 });
 
 test('stream quality: maps all supported resolutions and frame rates to capture constraints', () => {
@@ -62,7 +65,7 @@ test('stream quality: invalid values fall back to safe defaults', () => {
   const constraints = getCaptureConstraints({ resolution: '8k', fps: 250, shareAudio: true });
   assert.deepEqual(constraints.video.width, { ideal: 1920, max: 1920 });
   assert.deepEqual(constraints.video.height, { ideal: 1080, max: 1080 });
-  assert.deepEqual(constraints.video.frameRate, { ideal: 60, max: 60 });
+  assert.deepEqual(constraints.video.frameRate, { ideal: 30, max: 30 });
 });
 
 test('stream quality: divides adaptive bitrate budget among active viewers', () => {

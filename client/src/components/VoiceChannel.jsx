@@ -1,5 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
+import { createStereoSampleQueue } from '../audioSampleQueue.mjs';
 import { getCaptureConstraints, getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
 
 // Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
@@ -98,21 +99,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const configuracaoAudioRef = useRef({ volumeEntrada: 100, volumeSaida: 100, microfoneId: '', foneId: '', perfilEntrada: 'isolamento', supressaoRuido: 'rnnoise', cancelamentoEco: true, ganhoAutomatico: true });
   // Aplica o teto escolhido e, se a pessoa ativou qualidade inteligente,
   // divide o orçamento entre espectadores para reduzir a demanda de upload.
-  function bitratePorEspectador(res) {
-    const numEspectadores = Math.max(1, Object.keys(conexoesRef.current).length);
-    return getVideoEncodingParameters({ ...qualidadeTelaAtualRef.current, resolution: res }, numEspectadores).maxBitrate;
-  }
-
   function aplicarQualidadeVideo(remetente, res, { fps, escala } = {}) {
+    const numEspectadores = Math.max(1, Object.keys(conexoesRef.current).length);
+    const qualidadeVideo = getVideoEncodingParameters(
+      { ...qualidadeTelaAtualRef.current, resolution: res },
+      numEspectadores,
+    );
     const parametros = remetente.getParameters();
     const encodings = parametros.encodings?.length ? parametros.encodings : [{}];
     parametros.encodings = encodings.map((encoding) => ({
       ...encoding,
-      maxBitrate: bitratePorEspectador(res),
+      maxBitrate: qualidadeVideo.maxBitrate,
       ...(fps === undefined ? {} : { maxFramerate: fps }),
       ...(escala === undefined ? {} : { scaleResolutionDownBy: escala }),
     }));
-    parametros.degradationPreference = 'maintain-resolution';
+    parametros.degradationPreference = qualidadeVideo.degradationPreference;
     remetente.setParameters(parametros).catch(() => {
       if (avisouFalhaQualidadeRef.current) return;
       avisouFalhaQualidadeRef.current = true;
@@ -326,36 +327,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     const contexto = new AudioContext({ sampleRate: 48000 });
     const destino = contexto.createMediaStreamDestination();
 
-    const filaEsquerda = [];
-    const filaDireita = [];
-    const TAMANHO_MAXIMO_FILA = 48000 * 2; // ~2 segundos de margem de segurança
+    const fila = createStereoSampleQueue();
 
-    // 4096 amostras por bloco, 0 canais de entrada (não vem do
-    // microfone), 2 canais de saída (estéreo).
-    const processador = contexto.createScriptProcessor(4096, 0, 2);
+    // Blocos curtos reduzem a latência; a fila circular mantém a reprodução
+    // em O(1) e descarta áudio antigo se a captura não acompanhar a rede.
+    const processador = contexto.createScriptProcessor(1024, 0, 2);
     processador.onaudioprocess = (evento) => {
-      const saidaEsquerda = evento.outputBuffer.getChannelData(0);
-      const saidaDireita = evento.outputBuffer.getChannelData(1);
-      for (let i = 0; i < saidaEsquerda.length; i++) {
-        saidaEsquerda[i] = filaEsquerda.length ? filaEsquerda.shift() : 0;
-        saidaDireita[i] = filaDireita.length ? filaDireita.shift() : 0;
-      }
+      fila.readInto(
+        evento.outputBuffer.getChannelData(0),
+        evento.outputBuffer.getChannelData(1),
+      );
     };
     processador.connect(destino);
 
     function receberChunk(chunkBuffer) {
-      // chunkBuffer: PCM 16-bit assinado, estéreo, intercalado (LRLRLR...)
-      const bytes = new Uint8Array(chunkBuffer);
-      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      const totalAmostras = Math.floor(bytes.length / 4); // 2 bytes x 2 canais por amostra
-
-      for (let i = 0; i < totalAmostras; i++) {
-        const offset = i * 4;
-        const amostraEsquerda = view.getInt16(offset, true) / 32768;
-        const amostraDireita = view.getInt16(offset + 2, true) / 32768;
-        if (filaEsquerda.length < TAMANHO_MAXIMO_FILA) filaEsquerda.push(amostraEsquerda);
-        if (filaDireita.length < TAMANHO_MAXIMO_FILA) filaDireita.push(amostraDireita);
-      }
+      fila.pushPcm16Stereo(chunkBuffer);
     }
 
     return {

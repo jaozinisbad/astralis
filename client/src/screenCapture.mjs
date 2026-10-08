@@ -1,4 +1,5 @@
-import { getCaptureConstraints } from './streamQuality.mjs';
+import { getCaptureConstraints, resolveStreamQuality } from './streamQuality.mjs';
+import { createStereoSampleQueue } from './audioSampleQueue.mjs';
 
 const capturasAtivas = new WeakMap();
 const capturasEncerradas = new WeakSet();
@@ -10,28 +11,18 @@ function criarAudioFiltrado(electronAPI) {
 
   const context = new AudioContextImpl({ sampleRate: 48_000 });
   const destination = context.createMediaStreamDestination();
-  const left = [];
-  const right = [];
-  const maxSamples = 96_000;
-  const processor = context.createScriptProcessor(4096, 0, 2);
+  const queue = createStereoSampleQueue();
+  const processor = context.createScriptProcessor(1024, 0, 2);
   processor.onaudioprocess = (event) => {
-    const outputLeft = event.outputBuffer.getChannelData(0);
-    const outputRight = event.outputBuffer.getChannelData(1);
-    for (let index = 0; index < outputLeft.length; index += 1) {
-      outputLeft[index] = left.shift() || 0;
-      outputRight[index] = right.shift() || 0;
-    }
+    queue.readInto(
+      event.outputBuffer.getChannelData(0),
+      event.outputBuffer.getChannelData(1),
+    );
   };
   processor.connect(destination);
 
   const stopListening = electronAPI.onAudioTelaChunk((chunk) => {
-    const bytes = new Uint8Array(chunk);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    for (let offset = 0; offset + 3 < bytes.byteLength; offset += 4) {
-      if (left.length >= maxSamples) break;
-      left.push(view.getInt16(offset, true) / 32768);
-      right.push(view.getInt16(offset + 2, true) / 32768);
-    }
+    queue.pushPcm16Stereo(chunk);
   });
 
   return {
@@ -75,40 +66,41 @@ export function getScreenCaptureWarning(stream) {
 }
 
 export async function requestScreenCapture(settings = {}, electronAPI = globalThis.window?.electronAPI) {
-  const constraints = getCaptureConstraints(settings);
-  const isElectronWindow = Boolean(electronAPI && settings.fonteId?.startsWith('window:'));
-  const ignoringDiscord = Boolean(settings.fonteId?.startsWith('screen:') && settings.ignoreDiscordAudio && electronAPI?.iniciarCapturaExcluindoProcesso);
-  if (settings.fonteId && electronAPI?.definirFonteCompartilhamento) {
-    electronAPI.definirFonteCompartilhamento(settings.fonteId);
+  const qualidade = resolveStreamQuality(settings);
+  const constraints = getCaptureConstraints(qualidade);
+  const isElectronWindow = Boolean(electronAPI && qualidade.fonteId?.startsWith('window:'));
+  const ignoringDiscord = Boolean(qualidade.fonteId?.startsWith('screen:') && qualidade.ignoreDiscordAudio && electronAPI?.iniciarCapturaExcluindoProcesso);
+  if (qualidade.fonteId && electronAPI?.definirFonteCompartilhamento) {
+    electronAPI.definirFonteCompartilhamento(qualidade.fonteId);
   }
 
   const stream = isElectronWindow
     ? await globalThis.navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: criarRestricoesVideoDeJanela(settings),
+      video: criarRestricoesVideoDeJanela(qualidade),
     })
     : await globalThis.navigator.mediaDevices.getDisplayMedia({
       video: constraints.video,
       audio: Boolean(constraints.audio && !ignoringDiscord),
     });
 
-  if (isElectronWindow || settings.shareAudio === false) removerFaixasDeAudio(stream);
+  if (isElectronWindow || qualidade.shareAudio === false) removerFaixasDeAudio(stream);
 
   const videoTrack = stream.getVideoTracks()[0];
-  if (videoTrack) videoTrack.contentHint = settings.contentType === 'motion' ? 'motion' : 'detail';
+  if (videoTrack) videoTrack.contentHint = qualidade.contentType;
 
   let cleanupAudio = null;
   let processAudioStarted = false;
   let aviso = '';
 
-  if (isElectronWindow && settings.shareAudio !== false) {
+  if (isElectronWindow && qualidade.shareAudio !== false) {
     const filteredAudio = criarAudioFiltrado(electronAPI);
     if (!filteredAudio?.track || !electronAPI?.iniciarCapturaAudioJanela) {
       filteredAudio?.cleanup();
       aviso = 'Não consegui preparar o áudio isolado dessa janela; compartilhando sem áudio.';
     } else {
       try {
-        const result = await electronAPI.iniciarCapturaAudioJanela(settings.fonteId);
+        const result = await electronAPI.iniciarCapturaAudioJanela(qualidade.fonteId);
         if (result?.sucesso) {
           processAudioStarted = true;
           stream.addTrack(filteredAudio.track);
@@ -124,7 +116,7 @@ export async function requestScreenCapture(settings = {}, electronAPI = globalTh
     }
   } else if (!isElectronWindow && !ignoringDiscord) {
     const displaySurface = videoTrack?.getSettings?.().displaySurface;
-    const selectedMonitor = settings.fonteId?.startsWith('screen:');
+    const selectedMonitor = qualidade.fonteId?.startsWith('screen:');
     const surfaceAllowsAudio = electronAPI
       ? selectedMonitor
       : displaySurface === 'monitor' || displaySurface === 'browser';
@@ -136,7 +128,7 @@ export async function requestScreenCapture(settings = {}, electronAPI = globalTh
     }
   }
 
-  if (ignoringDiscord && settings.shareAudio !== false) {
+  if (ignoringDiscord && qualidade.shareAudio !== false) {
     try {
       const result = await electronAPI.iniciarCapturaExcluindoProcesso('Discord.exe');
       if (result?.sucesso) {

@@ -12,7 +12,7 @@ class FakeStream {
   removeTrack(track) { this.tracks = this.tracks.filter((item) => item !== track); }
 }
 
-test('screen capture: default profile requests full HD at 60 fps with detail hint', async () => {
+test('screen capture: default profile requests full HD at 30 fps with motion hint', async () => {
   const videoTrack = { kind: 'video', contentHint: '', stop() {} };
   const options = [];
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -25,8 +25,25 @@ test('screen capture: default profile requests full HD at 60 fps with detail hin
     assert.deepEqual(options[0].video, {
       width: { ideal: 1920, max: 1920 },
       height: { ideal: 1080, max: 1080 },
-      frameRate: { ideal: 60, max: 60 },
+      frameRate: { ideal: 30, max: 30 },
     });
+    assert.equal(videoTrack.contentHint, 'motion');
+    await stopScreenCapture(stream);
+  } finally {
+    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test('screen capture: detail profile keeps the detail hint', async () => {
+  const videoTrack = { kind: 'video', contentHint: '', stop() {} };
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { mediaDevices: { getDisplayMedia: async () => new FakeStream([videoTrack]) } },
+  });
+  try {
+    const stream = await requestScreenCapture({ contentType: 'detail' });
     assert.equal(videoTrack.contentHint, 'detail');
     await stopScreenCapture(stream);
   } finally {

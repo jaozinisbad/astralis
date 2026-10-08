@@ -1,6 +1,7 @@
 const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
+const fs = require('fs');
 const { exec } = require('child_process');
 const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback } = require('./screenCapturePolicy.cjs');
 
@@ -323,21 +324,121 @@ function createWindow() {
   return win;
 }
 
-// Verifica se há uma versão nova publicada, baixa em segundo plano e,
-// quando terminar, avisa a interface pra mostrar o botão de reiniciar.
-// Só roda em build empacotado (não em npm run dev:electron).
+// Verifica ao abrir e repete a consulta enquanto o app continuar aberto.
+// A atualização baixa sozinha e é instalada ao fechar o app ou reiniciá-lo.
 function configurarAtualizacaoAutomatica(win) {
   if (!app.isPackaged) return;
 
-  autoUpdater.checkForUpdatesAndNotify();
+  const logDirectory = path.join(app.getPath('userData'), 'logs');
+  const logPath = path.join(logDirectory, 'updater.log');
+  function registrarLogAtualizacao(nivel, ...valores) {
+    try {
+      fs.mkdirSync(logDirectory, { recursive: true });
+      const mensagem = valores.map((valor) => {
+        if (valor instanceof Error) return valor.stack || valor.message;
+        if (typeof valor === 'string') return valor;
+        try { return JSON.stringify(valor); } catch { return String(valor); }
+      }).join(' ');
+      fs.appendFileSync(logPath, new Date().toISOString() + ' [' + nivel + '] ' + mensagem + '\n');
+    } catch {}
+  }
+  autoUpdater.logger = {
+    debug: (...valores) => registrarLogAtualizacao('DEBUG', ...valores),
+    info: (...valores) => registrarLogAtualizacao('INFO', ...valores),
+    warn: (...valores) => registrarLogAtualizacao('WARN', ...valores),
+    error: (...valores) => registrarLogAtualizacao('ERROR', ...valores),
+  };
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on('update-downloaded', () => {
-    win.webContents.send('atualizacao-pronta');
+  let estadoAtualizacao = { status: 'idle', message: '' };
+  let ultimaVerificacao = 0;
+  let verificacaoAtiva = null;
+  function publicarEstado(status, message, detalhes = {}) {
+    estadoAtualizacao = { status, message, ...detalhes };
+    registrarLogAtualizacao('STATE', status + ': ' + message);
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send('atualizacao-status', estadoAtualizacao);
+    }
+  }
+
+  autoUpdater.on('checking-for-update', () => {
+    publicarEstado('checking', 'Verificando atualizações…');
+  });
+  autoUpdater.on('update-available', (info) => {
+    publicarEstado(
+      'available',
+      'Atualização ' + info.version + ' encontrada. Baixando em segundo plano…',
+      { version: info.version },
+    );
+  });
+  autoUpdater.on('update-not-available', (info) => {
+    publicarEstado('not-available', 'O Astralis está atualizado.', { version: info.version });
+  });
+  autoUpdater.on('download-progress', (progress) => {
+    const percent = Math.max(0, Math.min(100, Math.floor(progress.percent || 0)));
+    publicarEstado('downloading', 'Baixando atualização: ' + percent + '%.', { percent });
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    publicarEstado(
+      'downloaded',
+      'Atualização ' + info.version + ' pronta. Reinicie agora ou feche o Astralis para instalar.',
+      { version: info.version },
+    );
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send('atualizacao-pronta');
+    }
+  });
+  autoUpdater.on('error', (error) => {
+    registrarLogAtualizacao('ERROR', error);
+    publicarEstado(
+      'error',
+      'Não consegui verificar ou baixar a atualização. Confira a conexão e tente novamente.',
+      { detail: error?.message || String(error) },
+    );
   });
 
+  async function verificarAtualizacao(origem, forcar = false) {
+    const agora = Date.now();
+    if (verificacaoAtiva) return verificacaoAtiva;
+    if (!forcar && origem === 'focus' && agora - ultimaVerificacao < 5 * 60 * 1000) return null;
+    if (!forcar && ['available', 'downloading', 'downloaded'].includes(estadoAtualizacao.status)) return null;
+
+    ultimaVerificacao = agora;
+    registrarLogAtualizacao('INFO', 'Checking for updates (' + origem + ').');
+    publicarEstado('checking', 'Verificando atualizações…');
+    verificacaoAtiva = autoUpdater.checkForUpdatesAndNotify()
+      .catch((error) => {
+        registrarLogAtualizacao('ERROR', error);
+        publicarEstado(
+          'error',
+          'Não consegui verificar ou baixar a atualização. Confira a conexão e tente novamente.',
+          { detail: error?.message || String(error) },
+        );
+        return null;
+      })
+      .finally(() => {
+        verificacaoAtiva = null;
+      });
+    return verificacaoAtiva;
+  }
+
+  ipcMain.handle('obter-status-atualizacao', () => estadoAtualizacao);
+  ipcMain.handle('verificar-atualizacao', () => verificarAtualizacao('manual', true));
   ipcMain.handle('reiniciar-para-atualizar', () => {
     autoUpdater.quitAndInstall();
   });
+
+  const intervalo = setInterval(() => {
+    void verificarAtualizacao('periodic');
+  }, 60 * 60 * 1000);
+  intervalo.unref?.();
+  win.on('focus', () => {
+    void verificarAtualizacao('focus');
+  });
+  win.once('closed', () => clearInterval(intervalo));
+
+  void verificarAtualizacao('startup');
 }
 
 app.whenReady().then(() => {

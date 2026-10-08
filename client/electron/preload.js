@@ -51,6 +51,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Atualização automática: avisa quando uma nova versão já foi baixada
   // e está pronta, e permite pedir pro app reiniciar já atualizado.
+  obterStatusAtualizacao: () => ipcRenderer.invoke('obter-status-atualizacao'),
+  verificarAtualizacao: () => ipcRenderer.invoke('verificar-atualizacao'),
+  onAtualizacaoStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('atualizacao-status', listener);
+    return () => ipcRenderer.removeListener('atualizacao-status', listener);
+  },
   onAtualizacaoPronta: (callback) => {
     ipcRenderer.on('atualizacao-pronta', callback);
   },

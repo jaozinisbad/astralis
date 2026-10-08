@@ -148,14 +148,14 @@ test('stream peer: host creates offers only for viewers in its room', async () =
   session.close();
 });
 
-test('stream peer: default high-quality profile applies a 16 Mbps ceiling to each sender', async () => {
+test('stream peer: default profile applies a 4 Mbps ceiling to each sender', async () => {
   FakePeerConnection.instances = [];
   const socket = new FakeSocket();
   const session = createStreamRoomPeerSession({ socket, roomId: 'room-1', role: 'host', RTCPeerConnectionImpl: FakePeerConnection });
   session.setLocalStream(makeStream());
   socket.receive('sala:espectador-entrou', { salaId: 'room-1', socketId: 'viewer-a' });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(FakePeerConnection.instances[0].senders[0].params.encodings[0].maxBitrate, 16_000_000);
+  assert.equal(FakePeerConnection.instances[0].senders[0].params.encodings[0].maxBitrate, 4_000_000);
   session.close();
 });
 
