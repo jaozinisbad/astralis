@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { SERVER_URL } from '../api.js';
+import DownloadAppButton from './DownloadAppButton.jsx';
 
 export default function LoginScreen({ onAutenticado }) {
   const [modo, setModo] = useState('login');
@@ -224,6 +225,7 @@ export default function LoginScreen({ onAutenticado }) {
             </button>
           </div>
         </>}
+        <DownloadAppButton variant="login" />
       </section>
       </div>
     </main>

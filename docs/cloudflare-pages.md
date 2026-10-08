@@ -45,3 +45,23 @@ dedicado para celular ainda precisa ser implementado. A transmissão existente
 permanece acoplada ao canal de voz do aplicativo desktop e requer mudanças no
 fluxo de sinalização antes de espectadores móveis poderem assistir sem entrar
 em voz. Esta publicação, sozinha, não disponibiliza a transmissão no celular.
+
+## Download do aplicativo pelo site
+
+O botão **Baixar para Windows** está disponível no lobby e na tela de entrada,
+mesmo sem uma sessão, na web para computador. Ele fica oculto em dispositivos
+móveis, em telas de até 767 px e no Electron, que usa o atualizador manual.
+
+Somente após o clique, o frontend consulta a API pública de releases do GitHub
+(`/repos/jaozinisbad/astralis/releases/latest`), encontra o instalador Windows
+publicado e inicia seu download direto. Não há versão fixa no botão, página
+intermediária de releases ou consulta de download ao carregar o site. Assim,
+publicar uma nova release estável com o instalador mantém o botão atualizado,
+sem outro deploy do site. O GitHub continua armazenando o arquivo nos bastidores.
+
+Falhas de conexão, limite temporário da API e ausência de instalador mostram uma
+mensagem com opção de tentar novamente. O arquivo é para Windows. Como não há
+aplicativo móvel, a experiência de celular não exibe este botão.
+
+Esta funcionalidade usa somente o frontend estático existente. Não exige
+credenciais, variáveis secretas, Functions do Pages ou deploy no Render.

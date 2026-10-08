@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
+import DownloadAppButton from './DownloadAppButton.jsx';
 import { emitirSolicitacaoSala } from '../roomSocket.mjs';
 import './RoomLobby.css';
 
@@ -181,19 +182,22 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
           <span className="room-lobby__brand-mark" aria-hidden="true">✦</span>
           <span>ASTRALIS</span>
         </a>
-        <button className="room-lobby__profile" type="button" onClick={() => (usuario ? onAbrirPerfil?.() : onEntrarNaConta?.())} aria-label={usuario ? 'Abrir perfil' : 'Entrar na conta'}>
-          <span className="room-lobby__profile-avatar" aria-hidden="true">
-            <Avatar
-              nome={nomeUsuario}
-              avatarUrl={usuario?.avatarUrl || usuario?.avatar_url}
-              avatarCor={usuario?.avatarCor || usuario?.avatar_cor}
-              tamanho="sm"
-            />
-          </span>
-          <span className="room-lobby__profile-name">{usuario ? nomeUsuario : 'Entrar'}</span>
-          <span className="room-lobby__profile-chevron" aria-hidden="true">⌄</span>
-          <span className="room-lobby__sr-only">Abrir perfil</span>
-        </button>
+        <div className="room-lobby__topbar-actions">
+          <DownloadAppButton />
+          <button className="room-lobby__profile" type="button" onClick={() => (usuario ? onAbrirPerfil?.() : onEntrarNaConta?.())} aria-label={usuario ? 'Abrir perfil' : 'Entrar na conta'}>
+            <span className="room-lobby__profile-avatar" aria-hidden="true">
+              <Avatar
+                nome={nomeUsuario}
+                avatarUrl={usuario?.avatarUrl || usuario?.avatar_url}
+                avatarCor={usuario?.avatarCor || usuario?.avatar_cor}
+                tamanho="sm"
+              />
+            </span>
+            <span className="room-lobby__profile-name">{usuario ? nomeUsuario : 'Entrar'}</span>
+            <span className="room-lobby__profile-chevron" aria-hidden="true">⌄</span>
+            <span className="room-lobby__sr-only">Abrir perfil</span>
+          </button>
+        </div>
       </header>
 
       <div className="room-lobby__content">

@@ -53,15 +53,18 @@
 .room-lobby__topbar {
   position: relative;
   z-index: 1;
-  height: 74px;
+  min-height: 74px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 clamp(20px, 5.2vw, 76px);
+  gap: 24px;
+  padding: 12px clamp(20px, 5.2vw, 76px);
   border-bottom: 1px solid rgba(183, 191, 238, .08);
   background: rgba(9, 12, 23, .54);
   backdrop-filter: blur(18px);
 }
+
+.room-lobby__topbar-actions { display: flex; align-items: center; gap: 18px; min-width: 0; }
 
 .room-lobby__brand {
   display: inline-flex;
@@ -222,7 +225,9 @@
 }
 
 @media (max-width: 520px) {
-  .room-lobby__topbar { height: 63px; padding: 0 17px; }
+  .room-lobby__topbar { min-height: 63px; flex-wrap: wrap; gap: 12px; padding: 12px 17px; }
+  .room-lobby__topbar-actions { display: contents; }
+  .room-lobby__topbar-actions > .room-lobby__profile { order: 1; margin-left: auto; }
   .room-lobby__brand { font-size: 10px; letter-spacing: .16em; }
   .room-lobby__brand-mark { width: 27px; height: 27px; }
   .room-lobby__profile { gap: 7px; padding-right: 5px; }

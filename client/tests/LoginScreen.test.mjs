@@ -171,5 +171,7 @@ test('recuperação exige confirmação igual e envia o contrato correto sem aut
   assert.equal(autenticado, false);
   assert.equal(encontrarCampo('email').props.value, 'jogador@exemplo.com');
   assert.equal(renderer.root.findByType('h1').children.join(''), 'Entrar');
-  assert.match(renderer.root.findByProps({ role: 'status' }).children.join(''), /Senha redefinida com sucesso/);
+  const confirmacao = renderer.root.findAllByProps({ role: 'status' })
+    .find((status) => status.children.join('').includes('Senha redefinida com sucesso'));
+  assert.ok(confirmacao);
 });

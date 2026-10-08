@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://astralis-b2w.pages.dev">Abrir no navegador</a> ·
-  <a href="https://github.com/jaozinisbad/astralis/releases/latest">Baixar para Windows</a>
+  <a href="https://astralis-b2w.pages.dev">Baixar para Windows</a>
 </p>
 
 ## O que é o Astralis
@@ -21,7 +21,7 @@ As salas são focadas no conteúdo compartilhado: não têm chamada de voz nem c
 
 ### No Windows
 
-1. Abra a [release mais recente](https://github.com/jaozinisbad/astralis/releases/latest).
+1. Abra o [site do Astralis](https://astralis-b2w.pages.dev) e clique em **Baixar para Windows**. O site encontra o instalador da versão mais recente e inicia o download diretamente, sem precisar abrir o GitHub.
 2. Baixe e execute o instalador `Astralis-Setup-<versão>.exe`.
 3. Abra o Astralis e entre na sua conta, ou crie uma conta na tela de cadastro.
 4. Crie uma sala ou entre na sala de um amigo.
