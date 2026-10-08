@@ -708,7 +708,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         : { largura: 1280, altura: 720 };
 
       const usarCapturaCompativel = config?.modoCaptura === 'compatibilidade' && config?.fonteId;
-      if (!usarCapturaCompativel && config?.fonteId && window.electronAPI?.definirFonteCompartilhamento) {
+      if (config?.fonteId && window.electronAPI?.definirFonteCompartilhamento) {
         window.electronAPI.definirFonteCompartilhamento(config.fonteId);
       }
 
@@ -761,7 +761,36 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       setCompartilhandoTela(true);
       tocarEfeito('transmitir');
 
-      if (usarAudioPorApp) {
+      if (usarCapturaCompativel && qualidade.shareAudio) {
+        let pipeline = null;
+        let pararOuvinte = null;
+        try {
+          pipeline = criarPipelineDeAudioPorProcesso();
+          pararOuvinte = window.electronAPI?.onAudioTelaChunk(pipeline.receberChunk);
+          const resultado = await window.electronAPI?.iniciarCapturaAudioJanela(config.fonteId);
+          if (resultado?.sucesso && pararOuvinte) {
+            pipelineAudioProcessoRef.current = pipeline;
+            pararOuvinteAudioTelaRef.current = pararOuvinte;
+            audioTrackTela = pipeline.stream.getAudioTracks()[0];
+          } else {
+            pararOuvinte?.();
+            pipeline.destruir();
+            await window.electronAPI?.pararCapturaProcesso?.();
+            setErroCompartilhamento(
+              'Não consegui capturar o áudio isolado dessa janela (' + (resultado?.mensagem || 'motivo desconhecido') + '). Compartilhando sem áudio.',
+            );
+            audioTrackTela = null;
+          }
+        } catch (error) {
+          pararOuvinte?.();
+          pipeline?.destruir();
+          await window.electronAPI?.pararCapturaProcesso?.();
+          setErroCompartilhamento(
+            'Não consegui capturar o áudio isolado dessa janela (' + (error?.message || 'motivo desconhecido') + '). Compartilhando sem áudio.',
+          );
+          audioTrackTela = null;
+        }
+      } else if (usarAudioPorApp) {
         const resultado = await window.electronAPI?.iniciarCapturaProcesso(config.tituloJanela);
         if (resultado?.sucesso) {
           const pipeline = criarPipelineDeAudioPorProcesso();

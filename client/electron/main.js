@@ -2,6 +2,7 @@ const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain } = req
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const { exec } = require('child_process');
+const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback } = require('./screenCapturePolicy.cjs');
 
 app.setName('Astralis');
 if (process.platform === 'win32') {
@@ -22,6 +23,7 @@ try {
 // do app, pra usar na hora que o Electron de fato pedir a captura.
 let fonteEscolhidaId = null;
 let capturaProcessoAtual = null;
+let geracaoCapturaAudioJanela = 0;
 
 function configurarCompartilhamentoDeTela() {
   // Recebe do renderer qual fonte foi escolhida no ScreenShareSourcePicker,
@@ -34,15 +36,23 @@ function configurarCompartilhamentoDeTela() {
   // ligado, o próprio Windows/macOS mostra o seletor nativo dele e essa
   // função nem chega a rodar, ignorando a fonte escolhida no app.
   session.defaultSession.setDisplayMediaRequestHandler(
-    async (_request, callback) => {
-      const fontes = await desktopCapturer.getSources({ types: ['screen', 'window'] });
-      const escolhida = fonteEscolhidaId ? fontes.find((f) => f.id === fonteEscolhidaId) : null;
-      // "loopback" captura o áudio que está saindo do seu PC (sistema
-      // todo, não só da janela/jogo escolhido). Para capturar só de um
-      // app específico, usamos outra API por baixo (veja
-      // configurarCapturaPorProcesso) — o renderer decide qual usar.
-      callback({ video: escolhida || fontes[0], audio: 'loopback' });
-      fonteEscolhidaId = null; // reseta pra próxima vez, evita "grudar" na mesma fonte
+    async (request, callback) => {
+      const fonteId = fonteEscolhidaId;
+      fonteEscolhidaId = null;
+      try {
+        const fontes = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+        const escolhida = findSelectedCaptureSource(fontes, fonteId);
+        if (!escolhida) {
+          callback(null);
+          return;
+        }
+        callback({
+          video: escolhida,
+          ...(shouldUseSystemLoopback(request, escolhida) ? { audio: 'loopback' } : {}),
+        });
+      } catch {
+        callback(null);
+      }
     },
     { useSystemPicker: false },
   );
@@ -111,6 +121,22 @@ async function obterPidPorTitulo(tituloJanela) {
   }
 }
 
+
+// Converte o HWND do ID do Electron no PID do processo dono da janela.
+// Não usa o título, que pode se repetir.
+async function obterPidPorHandleJanela(handleJanela) {
+  if (process.platform !== 'win32' || !handleJanela || !/^\d+$/.test(handleJanela)) return null;
+  const script = [
+    "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AstralisWindowAudioWindow { [DllImport(\"user32.dll\")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); }'",
+    '$hwnd = [IntPtr][Int64]' + handleJanela,
+    '[UInt32]$processId = 0',
+    '$threadId = [AstralisWindowAudioWindow]::GetWindowThreadProcessId($hwnd, [ref]$processId)',
+    'if ($threadId -gt 0 -and $processId -gt 0) { Write-Output $processId }',
+  ].join('\n');
+  const stdout = await executarPowerShell(script);
+  const pid = Number(stdout?.trim());
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
 // Descobre o PID "raiz" de um programa pelo nome do executável (ex:
 // "Discord.exe"), em vez de pelo título da janela. Isso importa porque
 // programas como o Discord costumam ficar minimizados na bandeja do
@@ -143,6 +169,40 @@ async function obterPidRaizPorNomeDeProcesso(nomeExe) {
 // Windows (WASAPI Process Loopback Capture) — bem mais avançado que o
 // "audio: loopback" de cima, que pega o som do sistema inteiro.
 function configurarCapturaPorProcesso() {
+  ipcMain.handle('iniciar-captura-audio-janela', async (event, sourceId) => {
+    if (process.platform !== 'win32' || !loopback) {
+      return { sucesso: false, mensagem: 'A captura isolada dessa janela não está disponível neste computador.' };
+    }
+
+    const geracao = ++geracaoCapturaAudioJanela;
+    if (capturaProcessoAtual) {
+      const capturaAnterior = capturaProcessoAtual;
+      capturaProcessoAtual = null;
+      try { capturaAnterior.stop(); } catch {}
+    }
+
+    let capturaNova = null;
+    try {
+      const fontes = await desktopCapturer.getSources({ types: ['window'] });
+      const fonte = findSelectedCaptureSource(fontes, sourceId);
+      const handleJanela = getWindowHandleFromSourceId(fonte?.id);
+      const pid = handleJanela ? await obterPidPorHandleJanela(handleJanela) : null;
+      if (!pid || geracao !== geracaoCapturaAudioJanela) {
+        return { sucesso: false, mensagem: 'Não consegui identificar o processo da janela selecionada.' };
+      }
+
+      capturaNova = new loopback.LoopbackCapture();
+      capturaProcessoAtual = capturaNova;
+      capturaNova.start(pid, true, (chunk) => {
+        if (!event.sender.isDestroyed()) event.sender.send('audio-tela-chunk', chunk);
+      });
+      return { sucesso: true };
+    } catch {
+      try { capturaNova?.stop(); } catch {}
+      if (capturaProcessoAtual === capturaNova) capturaProcessoAtual = null;
+      return { sucesso: false, mensagem: 'Não consegui iniciar a captura isolada dessa janela.' };
+    }
+  });
   ipcMain.handle('iniciar-captura-processo', async (event, tituloJanela) => {
     if (!loopback) {
       return { sucesso: false, mensagem: 'Esse recurso só funciona no Windows 10 (versão 2004) ou mais novo.' };
@@ -172,6 +232,7 @@ function configurarCapturaPorProcesso() {
   });
 
   ipcMain.handle('parar-captura-processo', () => {
+    geracaoCapturaAudioJanela += 1;
     if (capturaProcessoAtual) {
       capturaProcessoAtual.stop();
       capturaProcessoAtual = null;

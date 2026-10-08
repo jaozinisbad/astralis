@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Captura de áudio de UM app específico (ex: só o jogo), em vez do
   // sistema inteiro. Só funciona no Windows 10+.
+  iniciarCapturaAudioJanela: (fonteId) => ipcRenderer.invoke('iniciar-captura-audio-janela', fonteId),
   iniciarCapturaProcesso: (tituloJanela) => ipcRenderer.invoke('iniciar-captura-processo', tituloJanela),
   // Modo inverso: captura o sistema inteiro, exceto um app específico
   // (ex: ignorar o Discord ao compartilhar a tela toda, pra não vazar

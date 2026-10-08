@@ -143,6 +143,12 @@
 .stream-stage:fullscreen > video { max-height: 100vh; }
 .stream-stage.is-pseudo-fullscreen { position: fixed; inset: 0; z-index: 100; width: 100vw; height: 100dvh; min-height: 100dvh; border: 0; border-radius: 0; }
 .stream-stage.is-pseudo-fullscreen > video { max-height: 100dvh; }
+.stream-stage:fullscreen .stream-stage-tile.is-selected,
+.stream-stage.is-pseudo-fullscreen .stream-stage-tile.is-selected { display: none; }
+.stream-player-controls { transition: opacity .18s ease; }
+.stream-stage.is-controls-hidden { cursor: none; }
+.stream-stage.is-controls-hidden .stream-player-controls { opacity: 0; pointer-events: none; }
+.stream-stage.is-controls-hidden .stream-player-controls:has(:focus-visible) { opacity: 1; pointer-events: auto; }
 .stream-stage-empty { width: min(100%, 420px); display: flex; flex-direction: column; align-items: center; padding: 32px 20px; text-align: center; }
 .stream-stage-empty h2 { margin: 14px 0 0; color: #eceeff; font-size: 19px; letter-spacing: -.025em; }
 .stream-stage-empty p { max-width: 350px; margin: 8px 0 20px; color: #929bb2; font-size: 12px; line-height: 1.6; }

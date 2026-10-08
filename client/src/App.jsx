@@ -18,7 +18,7 @@ import MemberSidebar from './components/MemberSidebar.jsx';
 import RoomLobby from './components/RoomLobby.jsx';
 import StreamRoom from './components/StreamRoom.jsx';
 import { SERVER_URL, apiFetch } from './api.js';
-import { requestScreenCapture, stopScreenCapture } from './screenCapture.mjs';
+import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from './screenCapture.mjs';
 import { emitirSolicitacaoSala } from './roomSocket.mjs';
 
 export default function App() {
@@ -418,6 +418,8 @@ export default function App() {
         try {
           const { stream: capturadoNoSeletor, ...configuracao } = config;
           const stream = capturadoNoSeletor || await requestScreenCapture(configuracao);
+          const warning = getScreenCaptureWarning(stream);
+          if (warning) setCaptureError(warning);
           setScreenQuality(configuracao);
           setScreenStream(stream);
           const videoTrack = stream.getVideoTracks()[0];

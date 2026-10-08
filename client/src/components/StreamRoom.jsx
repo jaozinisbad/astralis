@@ -76,6 +76,8 @@ export default function StreamRoom({
   const [volumeSupported, setVolumeSupported] = useState(null);
   const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
   const [pseudoFullscreen, setPseudoFullscreen] = useState(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [controlsHidden, setControlsHidden] = useState(false);
   const hostSessionRef = useRef(null);
   const viewerSessionsRef = useRef(new Map());
   const presenterPeerIdsRef = useRef([]);
@@ -85,8 +87,54 @@ export default function StreamRoom({
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const stageRef = useRef(null);
+  const controlsHideTimerRef = useRef(null);
   const hadRemoteStreamRef = useRef(false);
   const closedCaptureStoppedRef = useRef(null);
+  const fullscreenActive = pseudoFullscreen || nativeFullscreen;
+
+  function limparTimerDosControles() {
+    if (controlsHideTimerRef.current === null) return;
+    clearTimeout(controlsHideTimerRef.current);
+    controlsHideTimerRef.current = null;
+  }
+
+  function agendarOcultarControles() {
+    limparTimerDosControles();
+    controlsHideTimerRef.current = setTimeout(() => {
+      controlsHideTimerRef.current = null;
+      setControlsHidden(true);
+    }, 1800);
+  }
+
+  function registrarAtividadeNoPalco() {
+    setControlsHidden(false);
+    if (!fullscreenActive) {
+      limparTimerDosControles();
+      return;
+    }
+    agendarOcultarControles();
+  }
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined;
+    const documento = document;
+    function sincronizarTelaCheia() {
+      setNativeFullscreen(documento.fullscreenElement === stageRef.current);
+    }
+    documento.addEventListener?.('fullscreenchange', sincronizarTelaCheia);
+    sincronizarTelaCheia();
+    return () => documento.removeEventListener?.('fullscreenchange', sincronizarTelaCheia);
+  }, []);
+
+  useEffect(() => {
+    if (!fullscreenActive) {
+      limparTimerDosControles();
+      setControlsHidden(false);
+      return undefined;
+    }
+    agendarOcultarControles();
+    return limparTimerDosControles;
+  }, [fullscreenActive]);
 
   useEffect(() => {
     if (!socket || !roomId || !role) return undefined;
@@ -631,7 +679,15 @@ export default function StreamRoom({
       </header>
 
       <div className="stream-room-workspace">
-        <section ref={stageRef} className={`stream-stage${pseudoFullscreen ? ' is-pseudo-fullscreen' : ''}`} aria-label="Tela transmitida">
+        <section
+          ref={stageRef}
+          className={'stream-stage' + (pseudoFullscreen ? ' is-pseudo-fullscreen' : '') + (controlsHidden && fullscreenActive ? ' is-controls-hidden' : '')}
+          aria-label="Tela transmitida"
+          onPointerMove={registrarAtividadeNoPalco}
+          onPointerDown={registrarAtividadeNoPalco}
+          onKeyDown={registrarAtividadeNoPalco}
+          onFocusCapture={registrarAtividadeNoPalco}
+        >
           {selectedPresenter && selectedStream && selectedPresenterId === socket?.id ? <video data-stream-stage-video={true} ref={localVideoRef} autoPlay muted playsInline /> : selectedRemoteStream ? (
             <>
               <video data-stream-stage-video={true} ref={remoteVideoRef} autoPlay playsInline muted={remoteAudioMuted} onPause={() => setPlaybackNeedsGesture(true)} onPlaying={() => setPlaybackNeedsGesture(false)} />

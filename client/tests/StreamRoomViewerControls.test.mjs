@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { after, afterEach, before, test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { after, afterEach, before, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 import TestRenderer, { act } from 'react-test-renderer';
@@ -7,6 +8,7 @@ import { createServer } from 'vite';
 import { parseYouTubeVideoId } from '../src/youtubeVideoId.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const screenRoomsCss = readFileSync(new URL('../src/screen-rooms.css', import.meta.url), 'utf8');
 let vite;
 let StreamRoom;
 const originalRTCPeerConnection = globalThis.RTCPeerConnection;
@@ -187,6 +189,62 @@ test('viewer uses an in-page fullscreen fallback when native element fullscreen 
     await act(async () => fullscreenButton.props.onClick());
     assert.doesNotMatch(renderer.root.findByProps({ 'aria-label': 'Tela transmitida' }).props.className, /is-pseudo-fullscreen/);
   } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test('fullscreen controls and viewer pointer hide after inactivity and return on pointer movement', async () => {
+  const previousDocument = globalThis.document;
+  mock.timers.enable({ apis: ['setTimeout'] });
+  globalThis.document = { fullscreenElement: null };
+  try {
+    const { renderer } = await renderViewer();
+    const stage = () => renderer.root.findByProps({ 'aria-label': 'Tela transmitida' });
+    const fullscreenButton = renderer.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Tela cheia');
+    await act(async () => fullscreenButton.props.onClick());
+
+    await act(async () => mock.timers.tick(1799));
+    assert.doesNotMatch(stage().props.className, /is-controls-hidden/);
+    await act(async () => mock.timers.tick(1));
+    assert.match(stage().props.className, /is-controls-hidden/);
+    assert.match(screenRoomsCss, /\.stream-stage\.is-controls-hidden\s*\{\s*cursor:\s*none;\s*\}/, 'the same idle fullscreen state hides the viewer-side cursor');
+
+    await act(async () => stage().props.onPointerMove({}));
+    assert.doesNotMatch(stage().props.className, /is-controls-hidden/);
+    await act(async () => mock.timers.tick(1800));
+    assert.match(stage().props.className, /is-controls-hidden/);
+  } finally {
+    mock.timers.reset();
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test('native fullscreenchange also hides controls after inactivity and restores them on exit', async () => {
+  const previousDocument = globalThis.document;
+  const listeners = new Map();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  globalThis.document = {
+    fullscreenElement: null,
+    addEventListener(name, handler) { listeners.set(name, handler); },
+    removeEventListener(name, handler) { if (listeners.get(name) === handler) listeners.delete(name); },
+  };
+  try {
+    const { renderer, stageNode } = await renderViewer({ nativeFullscreen: true });
+    const stage = () => renderer.root.findByProps({ 'aria-label': 'Tela transmitida' });
+    const fullscreenButton = renderer.root.findAllByType('button').find((button) => button.props['aria-label'] === 'Tela cheia');
+    await act(async () => fullscreenButton.props.onClick());
+    globalThis.document.fullscreenElement = stageNode;
+    await act(async () => listeners.get('fullscreenchange')());
+
+    await act(async () => mock.timers.tick(1800));
+    assert.match(stage().props.className, /is-controls-hidden/);
+    globalThis.document.fullscreenElement = null;
+    await act(async () => listeners.get('fullscreenchange')());
+    assert.doesNotMatch(stage().props.className, /is-controls-hidden/);
+  } finally {
+    mock.timers.reset();
     if (previousDocument === undefined) delete globalThis.document;
     else globalThis.document = previousDocument;
   }

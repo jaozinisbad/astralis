@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, afterEach, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
@@ -100,6 +101,26 @@ test('two presenters appear as selectable thumbnails and a third share is disabl
   assert.equal(renderer.root.findAllByType('h2').some((node) => node.children.includes('Conectando à transmissão…')), true);
   const share = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Compartilhar tela');
   assert.equal(share.props.disabled, true);
+});
+
+test('fullscreen hides only the selected thumbnail and keeps the other presenter selectable', async () => {
+  const styles = readFileSync(new URL('../src/screen-rooms.css', import.meta.url), 'utf8');
+  assert.match(styles, /\.stream-stage:fullscreen\s+\.stream-stage-tile\.is-selected,\s*\.stream-stage\.is-pseudo-fullscreen\s+\.stream-stage-tile\.is-selected\s*\{\s*display:\s*none;\s*\}/);
+
+  const { renderer } = await showRoom([
+    { socketId: 'alex', name: 'Alex' },
+    { socketId: 'bia', name: 'Bia' },
+  ]);
+  const tiles = renderer.root.findAll((node) => node.type === 'button' && node.props['data-stream-tile']);
+  await act(async () => tiles[0].props.onClick());
+
+  const remainingTiles = renderer.root.findAll((node) => node.type === 'button' && node.props['data-stream-tile']);
+  assert.equal(remainingTiles.length, 2,
+    'both presenters remain in the selector so the other stream can still be opened');
+  assert.equal(remainingTiles.filter((node) => node.props['aria-pressed']).length, 1,
+    'the selected stream is identified for the fullscreen-only CSS rule');
+  assert.equal(remainingTiles.filter((node) => !node.props['aria-pressed']).length, 1,
+    'the alternate stream remains a separate selectable tile');
 });
 
 test('a second member can share while only one presenter is active', async () => {
