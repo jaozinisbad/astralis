@@ -17,11 +17,21 @@ import CreateChannelModal from './components/CreateChannelModal.jsx';
 import MemberSidebar from './components/MemberSidebar.jsx';
 import RoomLobby from './components/RoomLobby.jsx';
 import StreamRoom from './components/StreamRoom.jsx';
+import UpdateBanner from './components/UpdateBanner.jsx';
 import { SERVER_URL, apiFetch } from './api.js';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from './screenCapture.mjs';
 import { emitirSolicitacaoSala } from './roomSocket.mjs';
 
 export default function App() {
+  return (
+    <div className="app-shell">
+      <UpdateBanner />
+      <div className="app-shell__content"><AppContent /></div>
+    </div>
+  );
+}
+
+function AppContent() {
   const [sessao, setSessao] = useState(() => {
     const salvo = localStorage.getItem('sessao');
     return salvo ? JSON.parse(salvo) : null;
@@ -70,7 +80,6 @@ export default function App() {
   const [servidorConfiguracaoAberto, setServidorConfiguracaoAberto] = useState(false);
   const [criacaoCanal, setCriacaoCanal] = useState(null);
   const [pickerTelaAberto, setPickerTelaAberto] = useState(false);
-  const [estadoAtualizacao, setEstadoAtualizacao] = useState(null);
 
   // view: 'servidor' | 'amigos' | 'dm'
   const [view, setView] = useState('salas');
@@ -81,22 +90,6 @@ export default function App() {
   // canalId -> [{socketId, nome, avatarCor, avatarUrl}]. Isso alimenta a
   // pré-visualização de participantes mesmo sem você estar na call.
   const [presencaVoz, setPresencaVoz] = useState({});
-
-  // Mostra o andamento, erros e a atualização pronta, mesmo se o evento
-  // ocorreu antes de o componente registrar seu listener.
-  useEffect(() => {
-    const api = window.electronAPI;
-    if (!api?.onAtualizacaoStatus) return undefined;
-    let ativo = true;
-    const removerListener = api.onAtualizacaoStatus(setEstadoAtualizacao);
-    api.obterStatusAtualizacao?.()
-      .then((status) => { if (ativo) setEstadoAtualizacao(status); })
-      .catch(() => {});
-    return () => {
-      ativo = false;
-      removerListener?.();
-    };
-  }, []);
 
   useEffect(() => {
     function aoInvalidarSessao() {
@@ -658,25 +651,6 @@ export default function App() {
   return (
     <>
       <div className={`app${vozEstado.telaSelecionadaId ? ' app--transmissao-aberta' : ''}`}>
-      {['available', 'downloading', 'downloaded', 'error'].includes(estadoAtualizacao?.status) && (
-        <div
-          className={'atualizacao-banner' + (estadoAtualizacao.status === 'error' ? ' atualizacao-banner--erro' : '')}
-          role={estadoAtualizacao.status === 'error' ? 'alert' : 'status'}
-          aria-live="polite"
-        >
-          <span>{estadoAtualizacao.message}</span>
-          {estadoAtualizacao.status === 'downloaded' && (
-            <button type="button" onClick={() => window.electronAPI?.reiniciarParaAtualizar?.()}>
-              Reiniciar agora
-            </button>
-          )}
-          {estadoAtualizacao.status === 'error' && (
-            <button type="button" onClick={() => window.electronAPI?.verificarAtualizacao?.()}>
-              Tentar novamente
-            </button>
-          )}
-        </div>
-      )}
       <ServerSidebar
         servidores={servidores}
         servidorAtivoId={servidorAtivoId}

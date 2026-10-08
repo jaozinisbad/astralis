@@ -145,34 +145,150 @@ button, input, textarea, select {
   font-size: 10px;
 }
 
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app-shell__content {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.app-shell__content > .app,
+.app-shell__content > .app--screen-rooms,
+.app-shell__content .stream-room-view {
+  height: 100%;
+  min-height: 100%;
+}
+
+.app-shell__content .room-lobby,
+.app-shell__content .stream-room-gate,
+.app-shell__content .rooms-login-page {
+  min-height: 100%;
+}
+
+.app-shell__content .rooms-login-page .auth-shell {
+  min-height: 0;
+}
+
 .atualizacao-banner {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1000;
+  position: relative;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: #248046;
-  color: #fff;
-  font-size: 13px;
+  justify-content: space-between;
+  gap: 16px;
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 12px clamp(14px, 2vw, 24px);
+  border-bottom: 1px solid rgba(173, 161, 255, .22);
+  color: var(--ink);
+  background: linear-gradient(100deg, #211b3c, #142a30);
+  font-size: 12px;
 }
+
+.atualizacao-banner__content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.atualizacao-banner__heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.atualizacao-banner h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.atualizacao-banner__version {
+  padding: 2px 6px;
+  border: 1px solid rgba(173, 161, 255, .2);
+  border-radius: 5px;
+  color: var(--accent-bright);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.atualizacao-banner__message,
+.atualizacao-banner__hint,
+.atualizacao-banner__details p {
+  margin: 4px 0 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.atualizacao-banner__message { color: #d1d7e6; }
+.atualizacao-banner__hint { color: #aab5cb; font-size: 11px; }
+
+.atualizacao-banner__action {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid rgba(173, 161, 255, .28);
+  border-radius: 8px;
+  color: #f7f5ff;
+  background: linear-gradient(105deg, #7667df, #5c6dce);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.atualizacao-banner__action:hover:not(:disabled) { filter: brightness(1.12); }
+.atualizacao-banner__action:disabled { opacity: .62; cursor: progress; }
+
+.atualizacao-banner__progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+  margin-top: 8px;
+  color: var(--mint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.atualizacao-banner__progress progress {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(191, 199, 255, .13);
+  accent-color: var(--mint);
+}
+
+.atualizacao-banner__progress progress::-webkit-progress-bar { background: rgba(191, 199, 255, .13); }
+.atualizacao-banner__progress progress::-webkit-progress-value { background: var(--mint); border-radius: 999px; }
+.atualizacao-banner__progress span { flex: 0 0 auto; }
 
 .atualizacao-banner--erro {
-  background: #9b3636;
+  border-bottom-color: rgba(255, 135, 158, .24);
+  background: linear-gradient(100deg, #352030, #241e30);
 }
 
-.atualizacao-banner button {
-  background: #fff;
-  color: #248046;
-  border: none;
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-weight: 600;
-  cursor: pointer;
+.atualizacao-banner--erro h2 { color: #ffadb5; }
+.atualizacao-banner__details { margin-top: 6px; color: #c6bfce; font-size: 11px; }
+.atualizacao-banner__details summary { width: fit-content; cursor: pointer; }
+
+@media (max-width: 580px) {
+  .atualizacao-banner { align-items: stretch; flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
+  .atualizacao-banner__content { flex-basis: 100%; }
+  .atualizacao-banner__action { width: 100%; }
 }
 
 .versao-watermark {
@@ -2211,7 +2327,7 @@ button, input, textarea, select {
 .chat-anexo-botao:hover { color: var(--mint); background: rgba(141,231,219,.08); }
 .chat-mensagem__apagar { border-radius: 6px; }
 .chat-mensagem__apagar:hover { color: #ff9aa9; background: rgba(255,102,134,.11); }
-.atualizacao-banner { background: linear-gradient(90deg,#6253c7,#348d8e); }
+
 .versao-watermark { border-color: rgba(191,199,255,.12); border-radius: 999px; background: rgba(10,12,23,.78); }
 
 /* Entrada: apresentação ampla no desktop e formulário compacto no mobile */

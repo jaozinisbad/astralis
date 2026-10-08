@@ -49,17 +49,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('audio-tela-chunk', ouvinte);
   },
 
-  // Atualização automática: avisa quando uma nova versão já foi baixada
-  // e está pronta, e permite pedir pro app reiniciar já atualizado.
+  // Atualizações: consultar é automático; baixar e reiniciar exigem ação do usuário.
   obterStatusAtualizacao: () => ipcRenderer.invoke('obter-status-atualizacao'),
   verificarAtualizacao: () => ipcRenderer.invoke('verificar-atualizacao'),
+  baixarAtualizacao: () => ipcRenderer.invoke('baixar-atualizacao'),
   onAtualizacaoStatus: (callback) => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on('atualizacao-status', listener);
     return () => ipcRenderer.removeListener('atualizacao-status', listener);
   },
   onAtualizacaoPronta: (callback) => {
-    ipcRenderer.on('atualizacao-pronta', callback);
+    const listener = () => callback();
+    ipcRenderer.on('atualizacao-pronta', listener);
+    return () => ipcRenderer.removeListener('atualizacao-pronta', listener);
   },
   reiniciarParaAtualizar: () => ipcRenderer.invoke('reiniciar-para-atualizar'),
   copiarTexto: async (texto) => {
