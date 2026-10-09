@@ -2,11 +2,38 @@ const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain } = req
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
+const {
+  WGC_WINDOW_FEATURE,
+  addDisabledFeature,
+  supportsWindows10WindowCaptureCompatibility,
+} = require('./windowCaptureCompatibility.cjs');
 const { createManualUpdater } = require('./manualUpdater.cjs');
 const { exec } = require('child_process');
 const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback } = require('./screenCapturePolicy.cjs');
 
 app.setName('Astralis');
+const caminhoPreferenciasCapturaJanela = path.join(app.getPath('userData'), 'capture-preferences.json');
+const compatibilidadeCapturaJanelaDisponivel = process.platform === 'win32'
+  && supportsWindows10WindowCaptureCompatibility(process.getSystemVersion?.());
+function lerCompatibilidadeCapturaJanela() {
+  try {
+    return JSON.parse(fs.readFileSync(caminhoPreferenciasCapturaJanela, 'utf8')).usarGdi === true;
+  } catch {
+    return false;
+  }
+}
+let compatibilidadeCapturaJanelaAtiva = compatibilidadeCapturaJanelaDisponivel
+  && lerCompatibilidadeCapturaJanela();
+
+// Chromium 126 mantém as flags WGC de janela e monitor separadas. O modo legado
+// altera só janela; a captura de tela/monitor e o áudio por processo permanecem intactos.
+if (compatibilidadeCapturaJanelaAtiva) {
+  const recursosDesativados = addDisabledFeature(
+    app.commandLine.getSwitchValue('disable-features'),
+    WGC_WINDOW_FEATURE,
+  );
+  app.commandLine.appendSwitch('disable-features', recursosDesativados);
+}
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.appgamers.client');
 }
@@ -388,6 +415,37 @@ function configurarAtualizacaoManual(win) {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle('obter-compatibilidade-captura-janela', () => ({
+    available: compatibilidadeCapturaJanelaDisponivel,
+    enabled: compatibilidadeCapturaJanelaAtiva,
+  }));
+
+  ipcMain.handle('aplicar-compatibilidade-captura-janela', (_event, enabled) => {
+    if (!compatibilidadeCapturaJanelaDisponivel || typeof enabled !== 'boolean') {
+      return { ok: false, mensagem: 'Essa opção está disponível apenas no Windows 10 compatível.' };
+    }
+    if (enabled === compatibilidadeCapturaJanelaAtiva) return { ok: true, alterada: false };
+
+    const caminhoTemporario = caminhoPreferenciasCapturaJanela + '.tmp-' + process.pid;
+    try {
+      fs.writeFileSync(caminhoTemporario, JSON.stringify({ usarGdi: enabled }), 'utf8');
+      fs.renameSync(caminhoTemporario, caminhoPreferenciasCapturaJanela);
+    } catch (error) {
+      try { fs.unlinkSync(caminhoTemporario); } catch {}
+      return { ok: false, mensagem: 'Não consegui salvar a configuração: ' + error.message };
+    }
+
+    compatibilidadeCapturaJanelaAtiva = enabled;
+    setTimeout(() => {
+      app.relaunch({
+        args: enabled
+          ? process.argv.slice(1)
+          : removeFeatureFromSwitchArgs(process.argv.slice(1), 'disable-features', WGC_WINDOW_FEATURE),
+      });
+      app.exit(0);
+    }, 300);
+    return { ok: true, alterada: true };
+  });
   ipcMain.handle('copiar-texto', (_event, texto) => {
     if (typeof texto !== 'string' || !texto) throw new Error('Texto inválido para copiar.');
     clipboard.writeText(texto);

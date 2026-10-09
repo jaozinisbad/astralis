@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { DEFAULT_STREAM_QUALITY, STREAM_QUALITY_OPTIONS } from '../streamQuality.mjs';
 import { requestScreenCapture } from '../screenCapture.mjs';
+import WindowCaptureCompatibilityOption from './WindowCaptureCompatibilityOption.jsx';
 
 const LABEL_BITRATE = new Map([
   [700_000, 'Baixo · ~700 Kbps'], [2_000_000, 'Médio · ~2 Mbps'],
@@ -98,8 +99,8 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
               <label className="screen-quality-adaptive">
                 <input type="checkbox" checked={quality.adaptiveQuality} onChange={(event) => atualizar('adaptiveQuality', event.target.checked)} />
                 <span><strong>Qualidade inteligente</strong><small>{quality.adaptiveQuality
-                  ? 'Divide o limite de bitrate entre espectadores para poupar upload; a rede ainda pode reduzir o valor real.'
-                  : `Prioriza até ${(quality.bitrate / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} Mbps por espectador. O upload cresce por pessoa e a rede ainda pode reduzir o valor real.`}</small></span>
+                  ? 'Até ' + (quality.bitrate / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' Mbps de vídeo somados entre espectadores. Com estimativas disponíveis, o Astralis reaproveita o orçamento que uma conexão não consegue usar; sem elas, divide igualmente. Áudio e overhead usam upload adicional.'
+                  : 'Até ' + (quality.bitrate / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' Mbps de vídeo por espectador; o upload cresce com cada pessoa. A rede ainda pode reduzir o valor efetivo. Áudio e overhead usam upload adicional.'}</small></span>
               </label>
               <fieldset className="screen-content-type">
                 <legend>O que você está compartilhando</legend>
@@ -134,6 +135,9 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
                 <input type="checkbox" checked={quality.shareAudio} onChange={(event) => atualizar('shareAudio', event.target.checked)} />
                 Compartilhar o áudio da tela
               </label>
+              {fonteSelecionada?.tipo === 'janela' && (
+                <WindowCaptureCompatibilityOption visible />
+              )}
               {hasNativeSources && fonteSelecionada?.tipo === 'tela' && (
                 <label className="screen-quality-audio screen-quality-audio--advanced">
                   <input type="checkbox" checked={quality.ignoreDiscordAudio} onChange={(event) => atualizar('ignoreDiscordAudio', event.target.checked)} />

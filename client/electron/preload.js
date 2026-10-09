@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('definir-fonte-compartilhamento', fonteId);
   },
 
+  obterCompatibilidadeCapturaJanela: () =>
+    ipcRenderer.invoke('obter-compatibilidade-captura-janela'),
+  aplicarCompatibilidadeCapturaJanela: (enabled) =>
+    ipcRenderer.invoke('aplicar-compatibilidade-captura-janela', enabled),
   // Trocar dispositivo de áudio
   changeAudioDevice: async (kind, deviceId) => {
     try {

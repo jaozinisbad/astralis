@@ -1,0 +1,63 @@
+.window-capture-compatibility {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 13px 14px;
+  border: 1px solid rgba(188, 203, 245, .14);
+  border-radius: 10px;
+  background: rgba(11, 15, 29, .46);
+}
+
+.window-capture-compatibility__toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  cursor: pointer;
+}
+
+.window-capture-compatibility__toggle input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  accent-color: #8b7dff;
+}
+
+.window-capture-compatibility__toggle span {
+  display: grid;
+  gap: 5px;
+}
+
+.window-capture-compatibility__toggle strong {
+  color: #e2e8f7;
+  font-size: 13px;
+}
+
+.window-capture-compatibility__toggle small,
+.window-capture-compatibility__restart-note,
+.window-capture-compatibility__error {
+  color: #9aa6c0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.window-capture-compatibility > button {
+  justify-self: start;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(155, 137, 255, .45);
+  border-radius: 8px;
+  color: #f4f1ff;
+  background: rgba(118, 96, 227, .28);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.window-capture-compatibility > button:disabled {
+  cursor: wait;
+  opacity: .7;
+}
+
+.window-capture-compatibility__error {
+  color: #ff9c9c;
+}
