@@ -4,6 +4,7 @@ import {
   DEFAULT_STREAM_QUALITY,
   STREAM_QUALITY_OPTIONS,
   getCaptureConstraints,
+  getAdaptiveVideoBitrateAllocations,
   getVideoEncodingParameters,
   resolveStreamQuality,
 } from '../src/streamQuality.mjs';
@@ -76,4 +77,46 @@ test('stream quality: divides adaptive bitrate budget among active viewers', () 
   assert.equal(motion.maxBitrate, 4_000_000);
   assert.equal(motion.degradationPreference, 'maintain-framerate');
   assert.equal(getVideoEncodingParameters({ bitrate: 16_000_000, adaptiveQuality: true }, 4).maxBitrate, 4_000_000);
+});
+
+test('stream quality: adaptive room allocations start with a conservative equal aggregate share', () => {
+  const allocation = getAdaptiveVideoBitrateAllocations(
+    { bitrate: 4_000_000, adaptiveQuality: true },
+    ['viewer-a', 'viewer-b', 'viewer-c'],
+  );
+  assert.deepEqual([...allocation], [
+    ['viewer-a', 1_333_333],
+    ['viewer-b', 1_333_333],
+    ['viewer-c', 1_333_333],
+  ]);
+  assert.ok([...allocation.values()].reduce((sum, value) => sum + value, 0) <= 4_000_000);
+});
+
+test('stream quality: adaptive room allocations reuse a constrained peer share within the aggregate budget', () => {
+  const allocation = getAdaptiveVideoBitrateAllocations(
+    { bitrate: 4_000_000, adaptiveQuality: true },
+    ['weak', 'strong'],
+    new Map([['weak', 500_000], ['strong', 8_000_000]]),
+  );
+  assert.deepEqual([...allocation], [['weak', 425_000], ['strong', 3_575_000]]);
+  assert.equal([...allocation.values()].reduce((sum, value) => sum + value, 0), 4_000_000);
+});
+
+test('stream quality: adaptive room allocations do not exceed measured headroom or selected budget', () => {
+  const allocation = getAdaptiveVideoBitrateAllocations(
+    { bitrate: 4_000_000, adaptiveQuality: true },
+    ['weak', 'unknown'],
+    new Map([['weak', 1_000_000]]),
+  );
+  assert.deepEqual([...allocation], [['weak', 850_000], ['unknown', 2_000_000]]);
+  assert.ok([...allocation.values()].reduce((sum, value) => sum + value, 0) <= 4_000_000);
+});
+
+test('stream quality: disabling adaptive allocation keeps the selected cap for each peer', () => {
+  const allocation = getAdaptiveVideoBitrateAllocations(
+    { bitrate: 8_000_000, adaptiveQuality: false },
+    ['viewer-a', 'viewer-b'],
+    new Map([['viewer-a', 500_000]]),
+  );
+  assert.deepEqual([...allocation], [['viewer-a', 8_000_000], ['viewer-b', 8_000_000]]);
 });

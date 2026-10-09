@@ -75,3 +75,52 @@ export function getVideoEncodingParameters(settings = {}, viewerCount = 1) {
       : 'maintain-resolution',
   };
 }
+
+/**
+ * Shares the selected aggregate video budget fairly, then reallocates any
+ * share that a measured peer cannot use to peers with available headroom.
+ * Missing/early estimates keep the conservative equal-share ceiling.
+ */
+export function getAdaptiveVideoBitrateAllocations(settings = {}, peerIds = [], availableByPeer = new Map()) {
+  const resolved = resolveStreamQuality(settings);
+  const ids = [...new Set(peerIds.filter((id) => typeof id === 'string' && id))];
+  const allocations = new Map();
+  if (!ids.length) return allocations;
+
+  if (!resolved.adaptiveQuality) {
+    ids.forEach((id) => allocations.set(id, resolved.bitrate));
+    return allocations;
+  }
+
+  const equalShare = resolved.bitrate / ids.length;
+  const capacities = ids.map((id) => {
+    const measured = availableByPeer instanceof Map ? availableByPeer.get(id) : availableByPeer?.[id];
+    const hasEstimate = Number.isFinite(measured) && measured >= 0;
+    // Use only 85% of the per-connection estimate to leave room for audio,
+    // RTP overhead and short-term network variation.
+    const capacity = hasEstimate ? Math.floor(measured * 0.85) : Math.floor(equalShare);
+    return { id, capacity: Math.min(resolved.bitrate, capacity) };
+  });
+
+  // Water-fill equal shares until a low-capacity path saturates, then use its
+  // unused share on peers with headroom. The sum never exceeds the selected
+  // aggregate video budget.
+  let remaining = resolved.bitrate;
+  let active = capacities;
+  while (active.length) {
+    const share = remaining / active.length;
+    const saturated = active.filter((entry) => entry.capacity < share);
+    if (!saturated.length) {
+      active.forEach((entry) => allocations.set(entry.id, Math.floor(share)));
+      break;
+    }
+    const saturatedIds = new Set(saturated.map((entry) => entry.id));
+    saturated.forEach((entry) => {
+      allocations.set(entry.id, entry.capacity);
+      remaining -= entry.capacity;
+    });
+    active = active.filter((entry) => !saturatedIds.has(entry.id));
+  }
+
+  return allocations;
+}

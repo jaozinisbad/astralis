@@ -429,3 +429,48 @@ button.screen-picker-item { font-family: inherit; }
   .stream-room-actions .stream-room-copy { display: inline-flex; align-items: center; }
   .stream-room-participants__list { grid-auto-columns: minmax(135px, 1fr); }
 }
+
+/* Métricas reais da conexão de tela na sala. */
+.stream-room-participants__list { flex: 1 1 auto; min-height: 0; }
+.stream-room-participants__diagnostics {
+  flex: 0 1 auto;
+  max-height: min(36vh, 340px);
+  overflow: auto;
+  margin: 0 10px 10px;
+  padding: 10px;
+  border: 1px solid rgba(175, 188, 230, .12);
+  border-radius: 10px;
+  background: rgba(7, 10, 18, .68);
+  scrollbar-width: thin;
+}
+.stream-room-participants__diagnostics > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.stream-room-participants__diagnostics > header h3 { margin: 0; color: #e5e7f4; font-size: 11px; }
+.stream-room-participants__diagnostics > header span { color: #a99aff; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.stream-diagnostics-profile, .stream-diagnostics-note, .stream-diagnostics-footnote, .stream-diagnostics-empty, .stream-diagnostics-status {
+  margin: 7px 0 0;
+  color: #9aa4bb;
+  font-size: 9px;
+  line-height: 1.45;
+}
+.stream-diagnostics-profile strong { color: #d3d7e7; }
+.stream-diagnostics-note { color: #8e99b2; }
+.stream-diagnostics-peer { margin-top: 9px; padding-top: 8px; border-top: 1px solid rgba(175, 188, 230, .1); }
+.stream-diagnostics-peer h4 { margin: 0 0 6px; color: #c9c5ec; font-size: 10px; }
+.stream-diagnostics-connection { margin: 0 0 6px; color: #91cdb8; font-size: 8px; }
+.stream-diagnostics-connection.is-stale { color: #efbd83; }
+.stream-diagnostics-peer dl { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; margin: 0; }
+.stream-diagnostics-peer dl > div { min-width: 0; display: grid; gap: 2px; }
+.stream-diagnostics-peer dt { color: #7f8aa4; font-size: 8px; }
+.stream-diagnostics-peer dd { overflow: hidden; margin: 0; color: #d8dced; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.stream-diagnostics-status { color: #aeb7ca; }
+.stream-diagnostics-status.is-cpu { color: #f0c68e; }
+.stream-diagnostics-status.is-network { color: #f0a7b4; }
+.stream-diagnostics-status.is-insufficient { color: #929db4; }
+.stream-diagnostics-footnote { padding-top: 6px; border-top: 1px solid rgba(175, 188, 230, .08); color: #707c96; font-size: 8px; }
+
+@media (max-width: 760px) {
+  .stream-room-workspace.has-stream-diagnostics { grid-template-rows: minmax(150px, 1fr) minmax(180px, 34dvh); }
+  .stream-room-participants__diagnostics { max-height: 24dvh; margin: 0 6px 6px; padding: 7px; }
+  .stream-room-participants__diagnostics > header h3 { font-size: 10px; }
+  .stream-diagnostics-peer dl { gap: 4px 6px; }
+}

@@ -4,6 +4,7 @@ import { copyRoomInviteUrl } from '../roomInvite.mjs';
 import { parseYouTubeVideoId } from '../youtubeVideoId.mjs';
 import StreamRoomActionBar from './StreamRoomActionBar.jsx';
 import YouTubeRoomPlayer from './YouTubeRoomPlayer.jsx';
+import StreamDiagnostics from './StreamDiagnostics.jsx';
 
 const EMPTY_QUALITY = Object.freeze({});
 
@@ -38,6 +39,23 @@ function presentersDaSala(room) {
     : [];
 }
 
+function mensagemErroSinalizacao({ type, phase, error } = {}) {
+  const tipo = type === 'offer' ? 'oferta' : type === 'answer' ? 'resposta' : 'candidato ICE';
+  const acao = phase === 'send' ? 'enviar' : 'processar';
+  const detalhe = typeof error === 'string' ? error : error?.message;
+  return `Não foi possível ${acao} a ${tipo} da transmissão${detalhe ? `: ${detalhe}` : '.'}`;
+}
+
+function mensagemErroIce(failure = {}) {
+  const tentativas = Number.isFinite(failure.attempts) ? failure.attempts : 0;
+  const motivo = failure.reason === 'timeout'
+    ? 'A negociação excedeu o tempo limite.'
+    : failure.reason === 'ice-failed'
+      ? 'O ICE informou falha ao conectar os participantes.'
+      : 'A conexão WebRTC não foi estabelecida.';
+  return `${motivo} A transmissão não conectou após ${tentativas} ${tentativas === 1 ? 'tentativa' : 'tentativas'} de reconexão. Abra Diagnóstico para conferir os estados ICE e tente iniciar novamente.`;
+}
+
 export default function StreamRoom({
   socket,
   roomId,
@@ -58,6 +76,8 @@ export default function StreamRoom({
   const [youtubeDialogOpen, setYoutubeDialogOpen] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [remoteStreams, setRemoteStreams] = useState({});
+  const [hostDiagnostics, setHostDiagnostics] = useState(null);
+  const [remoteDiagnostics, setRemoteDiagnostics] = useState({});
   const [selectedPresenterId, setSelectedPresenterId] = useState(null);
   const [selectionDismissed, setSelectionDismissed] = useState(false);
   const selectionExplicitRef = useRef(false);
@@ -119,7 +139,11 @@ export default function StreamRoom({
     if (typeof document === 'undefined') return undefined;
     const documento = document;
     function sincronizarTelaCheia() {
-      setNativeFullscreen(documento.fullscreenElement === stageRef.current);
+      const isFullscreen = documento.fullscreenElement === stageRef.current;
+      setNativeFullscreen(isFullscreen);
+      setControlsHidden(false);
+      if (isFullscreen) agendarOcultarControles();
+      else limparTimerDosControles();
     }
     documento.addEventListener?.('fullscreenchange', sincronizarTelaCheia);
     sincronizarTelaCheia();
@@ -144,7 +168,10 @@ export default function StreamRoom({
       role: 'host',
       streamId: socket.id,
       quality,
+      onStats: setHostDiagnostics,
       onQualityError: () => setError('O navegador não aceitou o limite de bitrate. A transmissão continuará, mas pode ficar abaixo do perfil selecionado.'),
+      onSignalError: (details) => setError(mensagemErroSinalizacao(details)),
+      onIceFailure: (_peerId, failure) => setError(mensagemErroIce(failure)),
     });
     hostSessionRef.current = hostSession;
     hostSession.setLocalStream(localStream);
@@ -209,6 +236,8 @@ export default function StreamRoom({
       socket.off('sala:youtube:estado', onYouTubeState);
       socket.off('sala:youtube:reproducao', onYouTubePlayback);
       hostSession.close();
+      setHostDiagnostics(null);
+      setRemoteDiagnostics({});
       if (hostSessionRef.current === hostSession) hostSessionRef.current = null;
       viewerSessionsRef.current.forEach((session) => session.close());
       viewerSessionsRef.current.clear();
@@ -222,6 +251,12 @@ export default function StreamRoom({
       if (nextIds.has(id)) return;
       session.close();
       viewerSessionsRef.current.delete(id);
+      setRemoteDiagnostics((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, id)) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       setRemoteStreams((current) => {
         if (!Object.prototype.hasOwnProperty.call(current, id)) return current;
         const next = { ...current };
@@ -236,6 +271,9 @@ export default function StreamRoom({
         roomId,
         role: 'viewer',
         streamId: id,
+        onStats: (diagnostics) => setRemoteDiagnostics((current) => ({ ...current, [id]: diagnostics })),
+        onSignalError: (details) => setError(mensagemErroSinalizacao(details)),
+        onIceFailure: (_peerId, failure) => setError(mensagemErroIce(failure)),
         onRemoteStream: (_peerId, stream) => setRemoteStreams((current) => {
           if (!stream && !current[id]) return current;
           if (stream) return { ...current, [id]: stream };
@@ -268,6 +306,8 @@ export default function StreamRoom({
       hostSessionRef.current?.resetPeers();
       viewerSessionsRef.current.forEach((session) => session.resetPeers());
       setRemoteStreams({});
+      setHostDiagnostics(null);
+      setRemoteDiagnostics({});
       setJoined(false);
       setReconnecting(true);
       setRoom((current) => {
@@ -678,7 +718,7 @@ export default function StreamRoom({
         </div>
       </header>
 
-      <div className="stream-room-workspace">
+      <div className={'stream-room-workspace' + (selectedPresenter ? ' has-stream-diagnostics' : '')}>
         <section
           ref={stageRef}
           className={'stream-stage' + (pseudoFullscreen ? ' is-pseudo-fullscreen' : '') + (controlsHidden && fullscreenActive ? ' is-controls-hidden' : '')}
@@ -783,6 +823,11 @@ export default function StreamRoom({
             </li>}
           </ul>
           <p className="stream-room-participants__note">Compartilhamento de tela e vídeo do YouTube. Para conversar, usem o Discord.</p>
+          {selectedPresenter && <StreamDiagnostics
+            diagnostics={selectedPresenterId === socket?.id ? hostDiagnostics : remoteDiagnostics[selectedPresenterId]}
+            quality={selectedPresenterId === socket?.id ? quality : undefined}
+            outbound={selectedPresenterId === socket?.id}
+          />}
         </aside>
       </div>
 
