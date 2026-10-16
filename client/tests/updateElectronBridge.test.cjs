@@ -39,6 +39,7 @@ async function loadMain(packaged = true) {
       this.webContents = new EventEmitter();
       this.webContents.send = (...args) => this.messages.push(args);
       this.webContents.isDestroyed = () => this.destroyed;
+      this.webContents.setWindowOpenHandler = () => {};
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }

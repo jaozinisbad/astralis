@@ -1,6 +1,7 @@
 const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
+const { pathToFileURL } = require('node:url');
 const fs = require('fs');
 const {
   WGC_WINDOW_FEATURE,
@@ -8,6 +9,7 @@ const {
   supportsWindows10WindowCaptureCompatibility,
 } = require('./windowCaptureCompatibility.cjs');
 const { createManualUpdater } = require('./manualUpdater.cjs');
+const { installAppNavigationBoundary } = require('./navigationBoundary.cjs');
 const { exec } = require('child_process');
 const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback, isDiscordProcessName, getDiscordAudioExclusionTarget } = require('./screenCapturePolicy.cjs');
 
@@ -359,6 +361,10 @@ function createWindow() {
     },
   });
   win.removeMenu();
+  const appDocumentURL = app.isPackaged
+    ? pathToFileURL(path.join(__dirname, '../dist/index.html')).href
+    : 'http://localhost:5173/';
+  installAppNavigationBoundary(win.webContents, appDocumentURL);
 
   if (!app.isPackaged) {
     // Modo desenvolvimento: aponta pro servidor do Vite
