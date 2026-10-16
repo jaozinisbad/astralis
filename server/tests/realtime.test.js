@@ -5,9 +5,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const socketAuth = require('../socketAuth');
 const streamRooms = require('../streamRooms');
+const iceConfig = require('../iceConfig');
 
 // Executa os handlers reais com banco e transporte isolados, sem tocar produção.
-function criarServidor({ autorizado = true, bancoDisponivel = true } = {}) {
+function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } = {}) {
   const handlers = {};
   const endpoints = {};
   const enviados = [];
@@ -63,6 +64,7 @@ function criarServidor({ autorizado = true, bancoDisponivel = true } = {}) {
     './db': db,
     './socketAuth': socketAuth,
     './streamRooms': streamRooms,
+    './iceConfig': iceConfig,
     './routes/auth': {}, './routes/mensagens': {}, './routes/recuperacao': {},
     './routes/servidores': {
       router: {}, ehMembro: async () => autorizado, temPermissao: async () => autorizado,
@@ -76,7 +78,7 @@ function criarServidor({ autorizado = true, bancoDisponivel = true } = {}) {
       assert.ok(name in modules, `Dependência não isolada: ${name}`);
       return modules[name];
     },
-    process: { env: {} }, console: { log() {}, error: (...args) => erros.push(args) },
+    process: { env }, console: { log() {}, error: (...args) => erros.push(args) },
   });
   conectar(socket);
   return { handlers, socketListeners, enviados, registros, endpoints, erros, socket, io, conectar };
@@ -124,6 +126,37 @@ test('health indica indisponibilidade quando o banco não responde', async () =>
     await servidor.endpoints['/health']({}, res);
     assert.equal(status, bancoDisponivel ? 200 : 503);
     assert.equal(resultado.status, bancoDisponivel ? 'ok' : 'unavailable');
+    assert.equal(resultado.turnConfigured, false);
+  }
+});
+
+test('health expõe apenas a disponibilidade da configuração TURN validada, sem credenciais', async () => {
+  const configurations = [
+    { env: {}, configured: false },
+    { env: { WEBRTC_TURN_URLS: 'turn:relay.example:3478' }, configured: false },
+    { env: { WEBRTC_TURN_URLS: 'https://invalid.example', WEBRTC_TURN_SECRET: 'private-test-secret' }, configured: false },
+    { env: { WEBRTC_TURN_URLS: 'turns:relay.example:443?transport=tcp', WEBRTC_TURN_SECRET: 'private-test-secret' }, configured: true },
+  ];
+  for (const { env, configured } of configurations) {
+    for (const bancoDisponivel of [true, false]) {
+      const servidor = criarServidor({ bancoDisponivel, env });
+      let status = 200;
+      let resultado;
+      const headers = {};
+      const res = {
+        set(key, value) { headers[key] = value; },
+        status(code) { status = code; return this; },
+        json(value) { resultado = value; },
+      };
+      await servidor.endpoints['/health']({}, res);
+      assert.equal(status, bancoDisponivel ? 200 : 503);
+      assert.equal(headers['Cache-Control'], 'no-store');
+      assert.deepEqual(JSON.parse(JSON.stringify(resultado)), {
+        status: bancoDisponivel ? 'ok' : 'unavailable', turnConfigured: configured,
+      });
+      assert.equal(JSON.stringify(resultado).includes('private-test-secret'), false);
+      assert.equal(JSON.stringify(resultado).includes('relay.example'), false);
+    }
   }
 });
 

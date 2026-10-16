@@ -169,7 +169,7 @@ export default function StreamRoom({
       streamId: socket.id,
       quality,
       onStats: setHostDiagnostics,
-      onQualityError: () => setError('O navegador não aceitou o limite de bitrate. A transmissão continuará, mas pode ficar abaixo do perfil selecionado.'),
+      onQualityError: () => setError('O navegador não conseguiu aplicar a qualidade de vídeo; a transmissão continuará com o ajuste disponível.'),
       onSignalError: (details) => setError(mensagemErroSinalizacao(details)),
       onIceFailure: (_peerId, failure) => setError(mensagemErroIce(failure)),
     });
@@ -282,7 +282,7 @@ export default function StreamRoom({
           return next;
         }),
         onPeerConnectionFailed: () => {
-          if (joinedRef.current && socket.connected !== false) socket.emit('sala:espectador-pronto', { roomId });
+          if (joinedRef.current && socket.connected !== false) socket.emit('sala:espectador-pronto', { roomId, streamId: id, restart: true });
         },
       }));
     });

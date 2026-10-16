@@ -1,7 +1,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
-import { createStereoSampleQueue } from '../audioSampleQueue.mjs';
-import { getCaptureConstraints, getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
+import { getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
+import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from '../screenCapture.mjs';
 
 // Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
 // a descobrirem como se alcançar através da internet (NAT traversal).
@@ -81,12 +81,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const filtroRuidoRef = useRef(null);
 
   const telaLocalRef = useRef(null);
+  const pedidoCapturaTelaRef = useRef(0);
+  const controladorCapturaTelaRef = useRef(null);
+
+  function cancelarPedidoCapturaTela() {
+    pedidoCapturaTelaRef.current += 1;
+    controladorCapturaTelaRef.current?.abort();
+    controladorCapturaTelaRef.current = null;
+  }
+
+  useEffect(() => () => cancelarPedidoCapturaTela(), []);
   const telaTileRef = useRef(null);
   const resolucaoTelaAtualRef = useRef('1080p'); // pra saber o alvo de bitrate ao (re)equilibrar entre espectadores
   const qualidadeTelaAtualRef = useRef(resolveStreamQuality());
   const avisouFalhaQualidadeRef = useRef(false);
-  const pipelineAudioProcessoRef = useRef(null); // { stream, receberChunk, destruir } quando usando audio por app
-  const pararOuvinteAudioTelaRef = useRef(null); // funcao pra parar de escutar os chunks vindos do Electron
   const conexoesRef = useRef({}); // socketId -> RTCPeerConnection
   const audiosRef = useRef({}); // socketId -> HTMLAudioElement (microfone)
   const audiosTelaRef = useRef({}); // socketId -> HTMLAudioElement (áudio do sistema de quem compartilha tela)
@@ -110,14 +118,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     parametros.encodings = encodings.map((encoding) => ({
       ...encoding,
       maxBitrate: qualidadeVideo.maxBitrate,
-      ...(fps === undefined ? {} : { maxFramerate: fps }),
+      maxFramerate: fps ?? qualidadeTelaAtualRef.current.fps,
       ...(escala === undefined ? {} : { scaleResolutionDownBy: escala }),
     }));
     parametros.degradationPreference = qualidadeVideo.degradationPreference;
     remetente.setParameters(parametros).catch(() => {
       if (avisouFalhaQualidadeRef.current) return;
       avisouFalhaQualidadeRef.current = true;
-      setErroCompartilhamento('O navegador não aplicou o limite de bitrate solicitado; a transmissão continuará, mas pode ficar abaixo do perfil escolhido.');
+      setErroCompartilhamento('O navegador não conseguiu aplicar a qualidade de vídeo; a transmissão continuará com o ajuste disponível.');
     });
   }
 
@@ -316,44 +324,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     remetente.setParameters(parametros).catch(() => {});
   }
 
-  // Converte os pedaços de áudio cru (PCM 16-bit, estéreo, 48kHz) que o
-  // processo principal do Electron manda via IPC — vindos da captura de
-  // um app específico — num MediaStream de verdade, que o WebRTC
-  // consegue enviar pros outros participantes. Usa um ScriptProcessorNode
-  // (mais simples de implementar que um AudioWorklet) que vai "puxando"
-  // amostras de uma fila conforme o áudio toca.
-  function criarPipelineDeAudioPorProcesso() {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    const contexto = new AudioContext({ sampleRate: 48000 });
-    const destino = contexto.createMediaStreamDestination();
-
-    const fila = createStereoSampleQueue();
-
-    // Blocos curtos reduzem a latência; a fila circular mantém a reprodução
-    // em O(1) e descarta áudio antigo se a captura não acompanhar a rede.
-    const processador = contexto.createScriptProcessor(1024, 0, 2);
-    processador.onaudioprocess = (evento) => {
-      fila.readInto(
-        evento.outputBuffer.getChannelData(0),
-        evento.outputBuffer.getChannelData(1),
-      );
-    };
-    processador.connect(destino);
-
-    function receberChunk(chunkBuffer) {
-      fila.pushPcm16Stereo(chunkBuffer);
-    }
-
-    return {
-      stream: destino.stream,
-      receberChunk,
-      destruir: () => {
-        processador.disconnect();
-        contexto.close().catch(() => {});
-      },
-    };
-  }
-
   useEffect(() => {
     if (!socket) return;
     let cancelado = false;
@@ -379,25 +349,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           const transceiver = pc.getTransceivers().find((t) => t.sender === remetente);
           preferirH264(transceiver);
           aplicarQualidadeVideo(remetente, resolucaoTelaAtualRef.current);
+        } else if (track.kind === 'audio') {
+          const parametros = remetente.getParameters();
+          parametros.encodings = (parametros.encodings?.length ? parametros.encodings : [{}]).map(
+            (encoding) => ({ ...encoding, maxBitrate: BITRATE_AUDIO_TELA }),
+          );
+          remetente.setParameters(parametros).catch(() => {});
         }
       });
-      // O áudio "só desse app" (captura por processo) NÃO faz parte do
-      // stream de telaLocalRef — ele vem de um pipeline (Web Audio)
-      // completamente separado. Por isso o forEach acima nunca pega ele:
-      // quem já estava na call quando o compartilhamento começou recebe
-      // esse áudio (é adicionado manualmente em iniciarCompartilhamento),
-      // mas quem entra na call DEPOIS ficava sem, porque essa conexão
-      // nova só via os tracks de telaLocalRef. Corrigido adicionando esse
-      // áudio aqui também, se tiver um em andamento.
-      const audioTrackProcesso = pipelineAudioProcessoRef.current?.stream.getAudioTracks()[0];
-      if (audioTrackProcesso) {
-        const remetenteAudio = pc.addTrack(audioTrackProcesso, telaLocalRef.current);
-        const parametrosAudio = remetenteAudio.getParameters();
-        parametrosAudio.encodings = (parametrosAudio.encodings?.length ? parametrosAudio.encodings : [{}]).map(
-          (encoding) => ({ ...encoding, maxBitrate: BITRATE_AUDIO_TELA }),
-        );
-        remetenteAudio.setParameters(parametrosAudio).catch(() => {});
-      }
       // Chegou mais um espectador: reequilibra o bitrate de quem já estava
       // vendo, já que agora a banda de upload precisa ser dividida entre
       // mais gente.
@@ -609,6 +568,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
     return () => {
       cancelado = true;
+      cancelarPedidoCapturaTela();
       socket.emit('sair-canal-voz');
       socket.off('peers-existentes');
       socket.off('novo-peer');
@@ -626,17 +586,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       filtroRuidoRef.current = null;
       contextoEntradaRef.current?.close().catch(() => {});
       contextoEntradaRef.current = null;
-      telaLocalRef.current?.getTracks().forEach((t) => t.stop());
+      stopScreenCapture(telaLocalRef.current).catch(() => {});
       telaLocalRef.current = null;
-      if (pipelineAudioProcessoRef.current) {
-        pipelineAudioProcessoRef.current.destruir();
-        pipelineAudioProcessoRef.current = null;
-      }
-      if (pararOuvinteAudioTelaRef.current) {
-        pararOuvinteAudioTelaRef.current();
-        pararOuvinteAudioTelaRef.current = null;
-      }
-      window.electronAPI?.pararCapturaProcesso?.();
       setParticipantes([]);
       setTelasRemotas({});
       setTelaSelecionadaId(null);
@@ -679,6 +630,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   // fonte foi escolhida no seletor — sem isso, o Electron sempre decidia
   // sozinho (e sempre escolhia a primeira tela da lista).
   async function iniciarCompartilhamento(config) {
+    controladorCapturaTelaRef.current?.abort();
+    const controller = new AbortController();
+    controladorCapturaTelaRef.current = controller;
+    const pedido = ++pedidoCapturaTelaRef.current;
     try {
       setErroCompartilhamento('');
       avisouFalhaQualidadeRef.current = false;
@@ -693,51 +648,23 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         ? { largura: 1920, altura: 1080 }
         : { largura: 1280, altura: 720 };
 
-      const usarCapturaCompativel = config?.modoCaptura === 'compatibilidade' && config?.fonteId;
-      if (config?.fonteId && window.electronAPI?.definirFonteCompartilhamento) {
-        window.electronAPI.definirFonteCompartilhamento(config.fonteId);
+      // Both rooms and voice channels share the same capture and audio policy.
+      const stream = config?.stream || await requestScreenCapture(qualidade, undefined, { signal: controller.signal });
+      if (pedido !== pedidoCapturaTelaRef.current) {
+        await stopScreenCapture(stream);
+        return;
       }
-
-      // Se o usuário marcou "capturar só o áudio desse app", não pedimos
-      // o loopback do sistema inteiro no getDisplayMedia — em vez disso,
-      // usamos a captura por processo específico do Electron. O mesmo
-      // vale pra "ignorar um app no áudio" (ex: Discord) — nos dois
-      // casos quem manda o áudio de verdade é o pipeline por processo,
-      // não o getDisplayMedia.
-      const usarAudioPorApp = !!config?.capturarAudioApp && !!config?.tituloJanela;
-      const usarAudioIgnorandoApp = Boolean(config?.ignorarProcessoAudio || config?.ignoreDiscordAudio);
-
-      const stream = usarCapturaCompativel
-        ? await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            mandatory: {
-              chromeMediaSource: 'desktop',
-              chromeMediaSourceId: config.fonteId,
-              minWidth: dimensoes.largura,
-              maxWidth: dimensoes.largura,
-              minHeight: dimensoes.altura,
-              maxHeight: dimensoes.altura,
-              minFrameRate: fps,
-              maxFrameRate: fps,
-            },
-          },
-        })
-        : await navigator.mediaDevices.getDisplayMedia({
-          video: getCaptureConstraints(qualidade).video,
-          audio: Boolean(qualidade.shareAudio && !usarAudioPorApp && !usarAudioIgnorandoApp),
-        });
-
+      const aviso = getScreenCaptureWarning(stream);
+      if (aviso) setErroCompartilhamento(aviso);
       const videoTrack = stream.getVideoTracks()[0];
-      let audioTrackTela = stream.getAudioTracks()[0]; // pode não vir, dependendo do sistema
-      // "motion" faz o codec priorizar fluidez durante movimento rápido
-      // (jogo em ação) em vez de nitidez de imagem parada — era "detail"
-      // antes, o que é ótimo pra compartilhar texto/planilha parada, mas
-      // é exatamente o motivo da imagem borrar quando o jogo se move
-      // rápido: o encoder estava gastando bits tentando preservar
-      // detalhe estático em vez de acompanhar o movimento.
-      videoTrack.contentHint = qualidade.contentType;
-      videoTrack.onended = () => pararCompartilhamento();
+      const audioTrackTela = stream.getAudioTracks()[0];
+      if (!videoTrack) {
+        await stopScreenCapture(stream);
+        throw new Error('A captura não retornou vídeo.');
+      }
+      videoTrack.onended = () => {
+        if (telaLocalRef.current === stream) pararCompartilhamento();
+      };
 
       telaLocalRef.current = stream;
       resolucaoTelaAtualRef.current = res;
@@ -746,66 +673,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       setFpsTela(String(fps));
       setCompartilhandoTela(true);
       tocarEfeito('transmitir');
-
-      if (usarCapturaCompativel && qualidade.shareAudio) {
-        let pipeline = null;
-        let pararOuvinte = null;
-        try {
-          pipeline = criarPipelineDeAudioPorProcesso();
-          pararOuvinte = window.electronAPI?.onAudioTelaChunk(pipeline.receberChunk);
-          const resultado = await window.electronAPI?.iniciarCapturaAudioJanela(config.fonteId);
-          if (resultado?.sucesso && pararOuvinte) {
-            pipelineAudioProcessoRef.current = pipeline;
-            pararOuvinteAudioTelaRef.current = pararOuvinte;
-            audioTrackTela = pipeline.stream.getAudioTracks()[0];
-          } else {
-            pararOuvinte?.();
-            pipeline.destruir();
-            await window.electronAPI?.pararCapturaProcesso?.();
-            setErroCompartilhamento(
-              'Não consegui capturar o áudio isolado dessa janela (' + (resultado?.mensagem || 'motivo desconhecido') + '). Compartilhando sem áudio.',
-            );
-            audioTrackTela = null;
-          }
-        } catch (error) {
-          pararOuvinte?.();
-          pipeline?.destruir();
-          await window.electronAPI?.pararCapturaProcesso?.();
-          setErroCompartilhamento(
-            'Não consegui capturar o áudio isolado dessa janela (' + (error?.message || 'motivo desconhecido') + '). Compartilhando sem áudio.',
-          );
-          audioTrackTela = null;
-        }
-      } else if (usarAudioPorApp) {
-        const resultado = await window.electronAPI?.iniciarCapturaProcesso(config.tituloJanela);
-        if (resultado?.sucesso) {
-          const pipeline = criarPipelineDeAudioPorProcesso();
-          pipelineAudioProcessoRef.current = pipeline;
-          pararOuvinteAudioTelaRef.current = window.electronAPI.onAudioTelaChunk(pipeline.receberChunk);
-          audioTrackTela = pipeline.stream.getAudioTracks()[0];
-        } else {
-          // Não é motivo pra cancelar a transmissão inteira — só avisa
-          // que vai sem áudio isolado dessa vez.
-          setErroCompartilhamento(
-            `Não consegui capturar o áudio só desse app (${resultado?.mensagem || 'motivo desconhecido'}). Compartilhando sem esse áudio específico.`,
-          );
-          audioTrackTela = null;
-        }
-      } else if (usarAudioIgnorandoApp) {
-        const nomeProcesso = config?.nomeProcessoIgnorado || 'Discord.exe';
-        const resultado = await window.electronAPI?.iniciarCapturaExcluindoProcesso(nomeProcesso);
-        if (resultado?.sucesso) {
-          const pipeline = criarPipelineDeAudioPorProcesso();
-          pipelineAudioProcessoRef.current = pipeline;
-          pararOuvinteAudioTelaRef.current = window.electronAPI.onAudioTelaChunk(pipeline.receberChunk);
-          audioTrackTela = pipeline.stream.getAudioTracks()[0];
-        } else {
-          setErroCompartilhamento(
-            `Não consegui ignorar o ${nomeProcesso} no áudio (${resultado?.mensagem || 'motivo desconhecido'}). A transmissão seguirá sem áudio do sistema.`,
-          );
-          audioTrackTela = null;
-        }
-      }
 
       const alturaNativa = videoTrack.getSettings().height || dimensoes.altura;
       const alturaAlvo = res === '1080p' ? 1080 : 720;
@@ -833,6 +700,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       });
       await renegociarComTodos();
     } catch (err) {
+      if (pedido !== pedidoCapturaTelaRef.current) return;
       setErroCompartilhamento(
         err?.name === 'AbortError'
           ? 'Compartilhamento de tela cancelado.'
@@ -842,18 +710,17 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   async function pararCompartilhamento() {
+    cancelarPedidoCapturaTela();
     const stream = telaLocalRef.current;
     if (!stream) return;
     const videoTrack = stream.getVideoTracks()[0];
     const audioTrackSistema = stream.getAudioTracks()[0];
-    const audioTrackProcesso = pipelineAudioProcessoRef.current?.stream.getAudioTracks()[0];
 
     Object.values(conexoesRef.current).forEach((pc) => {
       pc.getSenders().forEach((remetente) => {
         if (
           remetente.track === videoTrack ||
-          (audioTrackSistema && remetente.track === audioTrackSistema) ||
-          (audioTrackProcesso && remetente.track === audioTrackProcesso)
+          (audioTrackSistema && remetente.track === audioTrackSistema)
         ) {
           pc.removeTrack(remetente);
         }
@@ -861,18 +728,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     });
 
     socket.emit('tela-parada');
-    stream.getTracks().forEach((t) => t.stop());
     telaLocalRef.current = null;
-
-    if (pipelineAudioProcessoRef.current) {
-      pipelineAudioProcessoRef.current.destruir();
-      pipelineAudioProcessoRef.current = null;
-    }
-    if (pararOuvinteAudioTelaRef.current) {
-      pararOuvinteAudioTelaRef.current();
-      pararOuvinteAudioTelaRef.current = null;
-    }
-    window.electronAPI?.pararCapturaProcesso?.();
+    await stopScreenCapture(stream);
 
     setCompartilhandoTela(false);
     await renegociarComTodos();

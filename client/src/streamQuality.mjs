@@ -1,16 +1,16 @@
 export const DEFAULT_STREAM_QUALITY = Object.freeze({
   resolution: '1080p',
-  fps: 30,
-  bitrate: 4_000_000,
+  fps: 60,
+  bitrate: 16_000_000,
   adaptiveQuality: true,
   contentType: 'motion',
   shareAudio: true,
-  ignoreDiscordAudio: false,
+  ignoreDiscordAudio: true,
 });
 
 export const STREAM_QUALITY_OPTIONS = Object.freeze({
   resolutions: Object.freeze(['576p', '720p', '1080p']),
-  fps: Object.freeze([15, 24, 30, 60]),
+  fps: Object.freeze([60]),
   bitrates: Object.freeze([700_000, 2_000_000, 4_000_000, 8_000_000, 16_000_000]),
 });
 
@@ -25,9 +25,8 @@ export function resolveStreamQuality(settings = {}) {
   const resolution = STREAM_QUALITY_OPTIONS.resolutions.includes(requestedResolution)
     ? requestedResolution
     : DEFAULT_STREAM_QUALITY.resolution;
-  const fps = STREAM_QUALITY_OPTIONS.fps.includes(Number(settings.fps))
-    ? Number(settings.fps)
-    : DEFAULT_STREAM_QUALITY.fps;
+  // Saved settings and older call sites must use the same 60 fps target.
+  const fps = DEFAULT_STREAM_QUALITY.fps;
   const bitrate = STREAM_QUALITY_OPTIONS.bitrates.includes(Number(settings.bitrate))
     ? Number(settings.bitrate)
     : DEFAULT_STREAM_QUALITY.bitrate;
@@ -38,6 +37,7 @@ export function resolveStreamQuality(settings = {}) {
     resolution,
     fps,
     bitrate,
+    ignoreDiscordAudio: true,
     contentType: settings.contentType === undefined
       ? DEFAULT_STREAM_QUALITY.contentType
       : settings.contentType === 'motion' ? 'motion' : 'detail',

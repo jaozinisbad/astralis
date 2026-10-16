@@ -4,6 +4,7 @@ import { createStereoSampleQueue } from './audioSampleQueue.mjs';
 const capturasAtivas = new WeakMap();
 const capturasEncerradas = new WeakSet();
 const avisosCaptura = new WeakMap();
+const proprietariosAudioNativo = new WeakMap();
 
 function criarAudioFiltrado(electronAPI) {
   const AudioContextImpl = globalThis.window?.AudioContext || globalThis.window?.webkitAudioContext;
@@ -65,11 +66,13 @@ export function getScreenCaptureWarning(stream) {
   return avisosCaptura.get(stream) || '';
 }
 
-export async function requestScreenCapture(settings = {}, electronAPI = globalThis.window?.electronAPI) {
+export async function requestScreenCapture(settings = {}, electronAPI = globalThis.window?.electronAPI, { signal } = {}) {
+  const erroCancelamento = () => new DOMException('A captura foi cancelada.', 'AbortError');
+  if (signal?.aborted) throw erroCancelamento();
   const qualidade = resolveStreamQuality(settings);
   const constraints = getCaptureConstraints(qualidade);
   const isElectronWindow = Boolean(electronAPI && qualidade.fonteId?.startsWith('window:'));
-  const ignoringDiscord = Boolean(qualidade.fonteId?.startsWith('screen:') && qualidade.ignoreDiscordAudio && electronAPI?.iniciarCapturaExcluindoProcesso);
+  const ignoringDiscord = Boolean(qualidade.fonteId?.startsWith('screen:') && electronAPI?.iniciarCapturaExcluindoProcesso);
   if (qualidade.fonteId && electronAPI?.definirFonteCompartilhamento) {
     electronAPI.definirFonteCompartilhamento(qualidade.fonteId);
   }
@@ -84,14 +87,35 @@ export async function requestScreenCapture(settings = {}, electronAPI = globalTh
       audio: Boolean(constraints.audio && !ignoringDiscord),
     });
 
-  if (isElectronWindow || qualidade.shareAudio === false) removerFaixasDeAudio(stream);
+  // The operating-system permission prompt can complete after the user left
+  // the room. Dispose its media before it can replace current native audio.
+  if (signal?.aborted) {
+    stream.getTracks().forEach((track) => track.stop());
+    throw erroCancelamento();
+  }
+
+  // Never retain unfiltered desktop audio, even if the browser returns an
+  // unexpected track despite audio:false or an older caller passes false.
+  removerFaixasDeAudio(stream);
 
   const videoTrack = stream.getVideoTracks()[0];
   if (videoTrack) videoTrack.contentHint = qualidade.contentType;
 
   let cleanupAudio = null;
   let processAudioStarted = false;
+  let proprietarioAudio = null;
   let aviso = '';
+
+  function registrarPedidoAudio() {
+    proprietarioAudio = {};
+    proprietariosAudioNativo.set(electronAPI, proprietarioAudio);
+  }
+
+  async function pararAudioSeAtual() {
+    if (!proprietarioAudio || proprietariosAudioNativo.get(electronAPI) !== proprietarioAudio) return;
+    proprietariosAudioNativo.delete(electronAPI);
+    try { await electronAPI.pararCapturaProcesso?.(); } catch {}
+  }
 
   if (isElectronWindow && qualidade.shareAudio !== false) {
     const filteredAudio = criarAudioFiltrado(electronAPI);
@@ -100,6 +124,7 @@ export async function requestScreenCapture(settings = {}, electronAPI = globalTh
       aviso = 'Não consegui preparar o áudio isolado dessa janela; compartilhando sem áudio.';
     } else {
       try {
+        registrarPedidoAudio();
         const result = await electronAPI.iniciarCapturaAudioJanela(qualidade.fonteId);
         if (result?.sucesso) {
           processAudioStarted = true;
@@ -111,38 +136,38 @@ export async function requestScreenCapture(settings = {}, electronAPI = globalTh
         }
       } catch {
         filteredAudio.cleanup();
+        if (processAudioStarted) await pararAudioSeAtual();
+        processAudioStarted = false;
         aviso = 'Não consegui iniciar o áudio isolado dessa janela; compartilhando sem áudio.';
       }
     }
-  } else if (!isElectronWindow && !ignoringDiscord) {
-    const displaySurface = videoTrack?.getSettings?.().displaySurface;
-    const selectedMonitor = qualidade.fonteId?.startsWith('screen:');
-    const surfaceAllowsAudio = electronAPI
-      ? selectedMonitor
-      : displaySurface === 'monitor' || displaySurface === 'browser';
-    if (!surfaceAllowsAudio) {
-      if (stream.getAudioTracks().length) {
-        removerFaixasDeAudio(stream);
-        aviso = 'O áudio foi removido porque a fonte escolhida não permite identificar o áudio dessa janela.';
-      }
-    }
+  } else if (!isElectronWindow && !ignoringDiscord && qualidade.shareAudio !== false) {
+    aviso = 'O filtro de áudio do Discord não está disponível; compartilhando sem áudio.';
   }
 
   if (ignoringDiscord && qualidade.shareAudio !== false) {
+    let filteredAudio = null;
     try {
-      const result = await electronAPI.iniciarCapturaExcluindoProcesso('Discord.exe');
-      if (result?.sucesso) {
+      filteredAudio = criarAudioFiltrado(electronAPI);
+      if (filteredAudio?.track) registrarPedidoAudio();
+      const result = filteredAudio?.track
+        ? await electronAPI.iniciarCapturaExcluindoProcesso('Discord.exe')
+        : null;
+      if (result?.sucesso && filteredAudio?.track) {
         processAudioStarted = true;
-        const filteredAudio = criarAudioFiltrado(electronAPI);
-        if (filteredAudio?.track) {
-          stream.addTrack(filteredAudio.track);
-          cleanupAudio = filteredAudio.cleanup;
-        } else {
-          await electronAPI.pararCapturaProcesso?.();
-          processAudioStarted = false;
-        }
+        stream.addTrack(filteredAudio.track);
+        cleanupAudio = filteredAudio.cleanup;
+      } else {
+        filteredAudio?.cleanup();
+        aviso = result?.mensagem || 'Não consegui excluir o áudio do Discord; compartilhando sem áudio.';
       }
     } catch {
+      filteredAudio?.cleanup();
+      if (processAudioStarted) {
+        await pararAudioSeAtual();
+        processAudioStarted = false;
+      }
+      aviso = 'Não consegui excluir o áudio do Discord; compartilhando sem áudio.';
       // Se o filtro por aplicativo não estiver disponível, continua sem áudio
       // para evitar incluir acidentalmente o som do Discord na transmissão.
     }
@@ -152,11 +177,13 @@ export async function requestScreenCapture(settings = {}, electronAPI = globalTh
   capturasAtivas.set(stream, {
     cleanup: async () => {
       cleanupAudio?.();
-      if (processAudioStarted) {
-        try { await electronAPI.pararCapturaProcesso?.(); } catch {}
-      }
+      if (processAudioStarted) await pararAudioSeAtual();
     },
   });
+  if (signal?.aborted) {
+    await stopScreenCapture(stream, electronAPI);
+    throw erroCancelamento();
+  }
   return stream;
 }
 

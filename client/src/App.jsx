@@ -47,6 +47,21 @@ function AppContent() {
   const [screenStream, setScreenStream] = useState(null);
   const [screenQuality, setScreenQuality] = useState(null);
   const [captureError, setCaptureError] = useState('');
+  const pedidoCapturaRef = useRef(0);
+  const controladorCapturaRef = useRef(null);
+  const screenStreamRef = useRef(null);
+
+  function cancelarPedidoCaptura() {
+    pedidoCapturaRef.current += 1;
+    controladorCapturaRef.current?.abort();
+    controladorCapturaRef.current = null;
+  }
+
+  useEffect(() => () => {
+    cancelarPedidoCaptura();
+    stopScreenCapture(screenStreamRef.current).catch(() => {});
+    screenStreamRef.current = null;
+  }, []);
 
   const [servidores, setServidores] = useState([]);
   const [servidoresCarregando, setServidoresCarregando] = useState(() => !!sessao);
@@ -415,25 +430,38 @@ function AppContent() {
 
   function handleCompartilharTela(config) {
     if (activeRoom) {
+      controladorCapturaRef.current?.abort();
+      const controller = new AbortController();
+      controladorCapturaRef.current = controller;
+      const pedido = ++pedidoCapturaRef.current;
       setCaptureError('');
       const iniciar = async () => {
         try {
           const { stream: capturadoNoSeletor, ...configuracao } = config;
-          const stream = capturadoNoSeletor || await requestScreenCapture(configuracao);
+          const stream = capturadoNoSeletor || await requestScreenCapture(configuracao, undefined, { signal: controller.signal });
+          if (pedido !== pedidoCapturaRef.current) {
+            await stopScreenCapture(stream);
+            return;
+          }
           const warning = getScreenCaptureWarning(stream);
           if (warning) setCaptureError(warning);
           setScreenQuality(configuracao);
+          const anterior = screenStreamRef.current;
+          screenStreamRef.current = stream;
+          if (anterior && anterior !== stream) stopScreenCapture(anterior).catch(() => {});
           setScreenStream(stream);
           const videoTrack = stream.getVideoTracks()[0];
           if (videoTrack) videoTrack.addEventListener('ended', () => {
             setScreenStream((atual) => {
               if (atual !== stream) return atual;
+              screenStreamRef.current = null;
               stopScreenCapture(stream).catch(() => {});
               return null;
             });
           }, { once: true });
           setPickerTelaAberto(false);
         } catch (error) {
+          if (pedido !== pedidoCapturaRef.current) return;
           setCaptureError(error?.name === 'NotAllowedError' || error?.name === 'AbortError'
             ? 'A captura foi cancelada.'
             : 'Não foi possível iniciar a captura de tela. Confira as permissões do sistema.');
@@ -508,18 +536,28 @@ function AppContent() {
   }
 
   async function pararCompartilhamentoDaSala() {
-    const atual = screenStream;
+    cancelarPedidoCaptura();
+    const atual = screenStreamRef.current;
+    screenStreamRef.current = null;
     setScreenStream(null);
     if (atual) await stopScreenCapture(atual);
   }
 
   function fecharSala() {
-    if (screenStream) stopScreenCapture(screenStream).catch(() => {});
+    cancelarPedidoCaptura();
+    if (screenStreamRef.current) stopScreenCapture(screenStreamRef.current).catch(() => {});
+    screenStreamRef.current = null;
     setScreenStream(null);
     setScreenQuality(null);
     setCaptureError('');
     setActiveRoom(null);
+    setPickerTelaAberto(false);
     alterarEnderecoDaSala(null);
+  }
+
+  function fecharSeletorTela() {
+    cancelarPedidoCaptura();
+    setPickerTelaAberto(false);
   }
 
   function selecionarServidor(id) {
@@ -580,7 +618,7 @@ function AppContent() {
           />
         )}
         {activeRoom && pickerTelaAberto && (
-          <ScreenShareSourcePicker onFechar={() => setPickerTelaAberto(false)} onSelecionar={handleCompartilharTela} />
+          <ScreenShareSourcePicker onFechar={fecharSeletorTela} onSelecionar={handleCompartilharTela} />
         )}
       </div>
     );
@@ -629,7 +667,7 @@ function AppContent() {
         )}
         {perfilAberto && <ProfileModal usuario={sessao.usuario} onFechar={() => setPerfilAberto(false)} onSalvar={salvarPerfil} />}
         {pickerTelaAberto && (
-          <ScreenShareSourcePicker onFechar={() => setPickerTelaAberto(false)} onSelecionar={handleCompartilharTela} />
+          <ScreenShareSourcePicker onFechar={fecharSeletorTela} onSelecionar={handleCompartilharTela} />
         )}
       </div>
     );
@@ -844,7 +882,7 @@ function AppContent() {
 
       {pickerTelaAberto && (
         <ScreenShareSourcePicker
-          onFechar={() => setPickerTelaAberto(false)}
+          onFechar={fecharSeletorTela}
           onSelecionar={handleCompartilharTela}
         />
       )}

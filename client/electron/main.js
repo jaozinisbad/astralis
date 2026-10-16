@@ -9,7 +9,7 @@ const {
 } = require('./windowCaptureCompatibility.cjs');
 const { createManualUpdater } = require('./manualUpdater.cjs');
 const { exec } = require('child_process');
-const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback } = require('./screenCapturePolicy.cjs');
+const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback, isDiscordProcessName, getDiscordAudioExclusionTarget } = require('./screenCapturePolicy.cjs');
 
 app.setName('Astralis');
 const caminhoPreferenciasCapturaJanela = path.join(app.getPath('userData'), 'capture-preferences.json');
@@ -52,7 +52,13 @@ try {
 // do app, pra usar na hora que o Electron de fato pedir a captura.
 let fonteEscolhidaId = null;
 let capturaProcessoAtual = null;
-let geracaoCapturaAudioJanela = 0;
+let geracaoCapturaAudio = 0;
+
+function pararCapturaDeAudioAtual() {
+  const capturaAnterior = capturaProcessoAtual;
+  capturaProcessoAtual = null;
+  try { capturaAnterior?.stop(); } catch {}
+}
 
 function configurarCompartilhamentoDeTela() {
   // Recebe do renderer qual fonte foi escolhida no ScreenShareSourcePicker,
@@ -166,6 +172,13 @@ async function obterPidPorHandleJanela(handleJanela) {
   const pid = Number(stdout?.trim());
   return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
+
+async function verificarAudioDoProcesso(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  const nome = (await executarPowerShell(`(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`))?.trim();
+  // If the process disappeared or cannot be identified, send no audio.
+  return Boolean(nome && !isDiscordProcessName(nome));
+}
 // Descobre o PID "raiz" de um programa pelo nome do executável (ex:
 // "Discord.exe"), em vez de pelo título da janela. Isso importa porque
 // programas como o Discord costumam ficar minimizados na bandeja do
@@ -176,20 +189,17 @@ async function obterPidPorHandleJanela(handleJanela) {
 // igual o nosso), pegamos o processo "raiz" — aquele cujo pai NÃO é
 // outro processo do mesmo nome — pra que o modo "excluir árvore de
 // processos" do Windows pegue todos os processos filhos dele também.
-async function obterPidRaizPorNomeDeProcesso(nomeExe) {
+async function obterAlvoExclusaoDiscord() {
   const stdout = await executarPowerShell(
-    `Get-CimInstance Win32_Process -Filter "Name='${nomeExe}'" | Select-Object ProcessId, ParentProcessId | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "Name='Discord.exe' OR Name='DiscordPTB.exe' OR Name='DiscordCanary.exe' OR Name='DiscordDevelopment.exe'" | Select-Object ProcessId, ParentProcessId, Name | ConvertTo-Json -Compress`,
   );
-  if (!stdout) return null;
+  if (!stdout) return { pid: null, reason: 'unidentified' };
   try {
     let lista = JSON.parse(stdout || '[]');
     if (!Array.isArray(lista)) lista = [lista];
-    if (!lista.length) return null;
-    const pids = new Set(lista.map((p) => p.ProcessId));
-    const raiz = lista.find((p) => !pids.has(p.ParentProcessId)) || lista[0];
-    return raiz.ProcessId;
+    return getDiscordAudioExclusionTarget(lista);
   } catch (e) {
-    return null;
+    return { pid: null, reason: 'unidentified' };
   }
 }
 
@@ -203,12 +213,8 @@ function configurarCapturaPorProcesso() {
       return { sucesso: false, mensagem: 'A captura isolada dessa janela não está disponível neste computador.' };
     }
 
-    const geracao = ++geracaoCapturaAudioJanela;
-    if (capturaProcessoAtual) {
-      const capturaAnterior = capturaProcessoAtual;
-      capturaProcessoAtual = null;
-      try { capturaAnterior.stop(); } catch {}
-    }
+    const geracao = ++geracaoCapturaAudio;
+    pararCapturaDeAudioAtual();
 
     let capturaNova = null;
     try {
@@ -216,14 +222,18 @@ function configurarCapturaPorProcesso() {
       const fonte = findSelectedCaptureSource(fontes, sourceId);
       const handleJanela = getWindowHandleFromSourceId(fonte?.id);
       const pid = handleJanela ? await obterPidPorHandleJanela(handleJanela) : null;
-      if (!pid || geracao !== geracaoCapturaAudioJanela) {
+      if (!pid || geracao !== geracaoCapturaAudio) {
         return { sucesso: false, mensagem: 'Não consegui identificar o processo da janela selecionada.' };
+      }
+      if (!await verificarAudioDoProcesso(pid) || geracao !== geracaoCapturaAudio) {
+        return { sucesso: false, mensagem: 'O áudio do Discord está sempre excluído; esta janela será compartilhada sem áudio.' };
       }
 
       capturaNova = new loopback.LoopbackCapture();
       capturaProcessoAtual = capturaNova;
       capturaNova.start(pid, true, (chunk) => {
-        if (!event.sender.isDestroyed()) event.sender.send('audio-tela-chunk', chunk);
+        if (geracao === geracaoCapturaAudio && capturaProcessoAtual === capturaNova
+          && !event.sender.isDestroyed()) event.sender.send('audio-tela-chunk', chunk);
       });
       return { sucesso: true };
     } catch {
@@ -237,35 +247,37 @@ function configurarCapturaPorProcesso() {
       return { sucesso: false, mensagem: 'Esse recurso só funciona no Windows 10 (versão 2004) ou mais novo.' };
     }
 
+    const geracao = ++geracaoCapturaAudio;
+    pararCapturaDeAudioAtual();
+    let capturaNova = null;
     try {
       const pid = await obterPidPorTitulo(tituloJanela);
-      if (!pid) {
+      if (!pid || geracao !== geracaoCapturaAudio) {
         return { sucesso: false, mensagem: `Não encontrei o processo da janela "${tituloJanela}".` };
       }
-
-      if (capturaProcessoAtual) {
-        capturaProcessoAtual.stop();
-        capturaProcessoAtual = null;
+      if (!await verificarAudioDoProcesso(pid) || geracao !== geracaoCapturaAudio) {
+        return { sucesso: false, mensagem: 'O áudio do Discord está sempre excluído; esta janela será compartilhada sem áudio.' };
       }
 
-      capturaProcessoAtual = new loopback.LoopbackCapture();
+      capturaNova = new loopback.LoopbackCapture();
+      capturaProcessoAtual = capturaNova;
       // "true" inclui processos-filho (ex: um jogo que abre sub-processos)
-      capturaProcessoAtual.start(pid, true, (chunk) => {
-        event.sender.send('audio-tela-chunk', chunk);
+      capturaNova.start(pid, true, (chunk) => {
+        if (geracao === geracaoCapturaAudio && capturaProcessoAtual === capturaNova
+          && !event.sender.isDestroyed()) event.sender.send('audio-tela-chunk', chunk);
       });
 
       return { sucesso: true };
     } catch (err) {
+      try { capturaNova?.stop(); } catch {}
+      if (capturaProcessoAtual === capturaNova) capturaProcessoAtual = null;
       return { sucesso: false, mensagem: `Erro ao iniciar a captura: ${err.message}` };
     }
   });
 
   ipcMain.handle('parar-captura-processo', () => {
-    geracaoCapturaAudioJanela += 1;
-    if (capturaProcessoAtual) {
-      capturaProcessoAtual.stop();
-      capturaProcessoAtual = null;
-    }
+    geracaoCapturaAudio += 1;
+    pararCapturaDeAudioAtual();
     return { sucesso: true };
   });
 }
@@ -282,33 +294,40 @@ function configurarCapturaPorProcesso() {
 // isso ativa o modo "excluir árvore de processos" da WASAPI, em vez de
 // "incluir" — captura tudo, menos aquele processo (e os filhos dele).
 function configurarCapturaExcluindoProcesso() {
-  ipcMain.handle('iniciar-captura-excluindo-processo', async (event, nomeProcesso) => {
+  ipcMain.handle('iniciar-captura-excluindo-processo', async (event) => {
     if (!loopback) {
       return { sucesso: false, mensagem: 'Esse recurso só funciona no Windows 10 (versão 2004) ou mais novo.' };
     }
 
+    const geracao = ++geracaoCapturaAudio;
+    pararCapturaDeAudioAtual();
+    let capturaNova = null;
     try {
-      const pid = await obterPidRaizPorNomeDeProcesso(nomeProcesso);
+      const { pid, reason } = await obterAlvoExclusaoDiscord();
+      if (geracao !== geracaoCapturaAudio) {
+        return { sucesso: false, mensagem: 'A solicitação de áudio foi cancelada.' };
+      }
       if (!pid) {
         return {
           sucesso: false,
-          mensagem: `Não encontrei o ${nomeProcesso} rodando. Ele precisa estar aberto (pode estar minimizado).`,
+          mensagem: reason === 'multiple-roots'
+            ? 'Há mais de uma instância independente do Discord aberta; compartilhando sem áudio para excluir todas elas.'
+            : 'Não consegui identificar uma única árvore de processos do Discord para excluir; compartilhando sem áudio.',
         };
       }
 
-      if (capturaProcessoAtual) {
-        capturaProcessoAtual.stop();
-        capturaProcessoAtual = null;
-      }
-
-      capturaProcessoAtual = new loopback.LoopbackCapture();
+      capturaNova = new loopback.LoopbackCapture();
+      capturaProcessoAtual = capturaNova;
       // "false" aqui é o que liga o modo excluir, não "incluir árvore".
-      capturaProcessoAtual.start(pid, false, (chunk) => {
-        event.sender.send('audio-tela-chunk', chunk);
+      capturaNova.start(pid, false, (chunk) => {
+        if (geracao === geracaoCapturaAudio && capturaProcessoAtual === capturaNova
+          && !event.sender.isDestroyed()) event.sender.send('audio-tela-chunk', chunk);
       });
 
       return { sucesso: true };
     } catch (err) {
+      try { capturaNova?.stop(); } catch {}
+      if (capturaProcessoAtual === capturaNova) capturaProcessoAtual = null;
       return { sucesso: false, mensagem: `Erro ao iniciar a captura: ${err.message}` };
     }
   });

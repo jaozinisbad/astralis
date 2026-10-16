@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from '../src/screenCapture.mjs';
-import { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback } from '../electron/screenCapturePolicy.cjs';
+import { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback, isDiscordProcessName } from '../electron/screenCapturePolicy.cjs';
 
 class FakeStream {
   constructor(tracks = []) { this.tracks = [...tracks]; }
@@ -12,7 +12,7 @@ class FakeStream {
   removeTrack(track) { this.tracks = this.tracks.filter((item) => item !== track); }
 }
 
-test('screen capture: default profile requests full HD at 30 fps with motion hint', async () => {
+test('screen capture: default profile requests full HD at 60 fps with motion hint', async () => {
   const videoTrack = { kind: 'video', contentHint: '', stop() {} };
   const options = [];
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -25,7 +25,7 @@ test('screen capture: default profile requests full HD at 30 fps with motion hin
     assert.deepEqual(options[0].video, {
       width: { ideal: 1920, max: 1920 },
       height: { ideal: 1080, max: 1080 },
-      frameRate: { ideal: 30, max: 30 },
+      frameRate: { ideal: 60, max: 60 },
     });
     assert.equal(videoTrack.contentHint, 'motion');
     await stopScreenCapture(stream);
@@ -79,7 +79,7 @@ test('screen capture: applies selected source and excludes Discord audio on Elec
     pararCapturaProcesso: async () => { stoppedProcessCapture = true; },
   };
   try {
-    const stream = await requestScreenCapture({ fonteId: 'screen:9', resolution: '1080p', fps: 60, shareAudio: true, ignoreDiscordAudio: true }, electronAPI);
+    const stream = await requestScreenCapture({ fonteId: 'screen:9', resolution: '1080p', fps: 60, shareAudio: true, ignoreDiscordAudio: false }, electronAPI);
     assert.equal(selectedSource, 'screen:9');
     assert.equal(displayOptions[0].audio, false);
     assert.equal(displayOptions[0].video.frameRate.max, 60);
@@ -104,7 +104,7 @@ test('screen capture: shares desktop audio only when enabled and Discord filteri
     await requestScreenCapture({ shareAudio: false });
     await requestScreenCapture({ shareAudio: true, ignoreDiscordAudio: true });
     await requestScreenCapture({ shareAudio: true });
-    assert.deepEqual(options.map((option) => option.audio), [false, false, true]);
+    assert.deepEqual(options.map((option) => option.audio), [false, false, false]);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete globalThis.navigator;
@@ -209,7 +209,7 @@ test('screen capture: browser-selected window audio is removed instead of being 
     const stream = await requestScreenCapture({ shareAudio: true }, null);
     assert.deepEqual(stream.getTracks().map((track) => track.kind), ['video']);
     assert.equal(audioTrack.stopped, true);
-    assert.match(getScreenCaptureWarning(stream), /áudio foi removido/i);
+    assert.match(getScreenCaptureWarning(stream), /filtro.*Discord.*sem áudio/i);
     await stopScreenCapture(stream, null);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
@@ -217,14 +217,14 @@ test('screen capture: browser-selected window audio is removed instead of being 
   }
 });
 
-test('screen capture: an explicitly selected Electron monitor can keep requested system audio', async () => {
+test('screen capture: an Electron monitor stays video-only when Discord filtering is unavailable', async () => {
   const videoTrack = { kind: 'video', getSettings: () => ({}), stop() {} };
   const audioTrack = { kind: 'audio', stop() {} };
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
     value: { mediaDevices: { getDisplayMedia: async (options) => {
-      assert.equal(options.audio, true);
+      assert.equal(options.audio, false);
       return new FakeStream([videoTrack, audioTrack]);
     } } },
   });
@@ -233,7 +233,8 @@ test('screen capture: an explicitly selected Electron monitor can keep requested
   try {
     const stream = await requestScreenCapture({ fonteId: 'screen:1:0', shareAudio: true }, electronAPI);
     assert.equal(selectedSource, 'screen:1:0');
-    assert.deepEqual(stream.getTracks().map((track) => track.kind), ['video', 'audio']);
+    assert.deepEqual(stream.getTracks().map((track) => track.kind), ['video']);
+    assert.match(getScreenCaptureWarning(stream), /filtro.*Discord.*sem áudio/i);
     await stopScreenCapture(stream, electronAPI);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
@@ -258,5 +259,15 @@ test('screen capture: disabling audio keeps a selected window video-only', async
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete globalThis.navigator;
+  }
+});
+
+
+test('screen capture policy: Discord desktop variants cannot be treated as isolated game audio', () => {
+  for (const name of ['Discord.exe', 'Discord', 'DiscordPTB.exe', 'discordcanary', 'DiscordDevelopment.exe']) {
+    assert.equal(isDiscordProcessName(name), true, name);
+  }
+  for (const name of ['game.exe', 'DiscordGame.exe', '', undefined]) {
+    assert.equal(isDiscordProcessName(name), false, String(name));
   }
 });

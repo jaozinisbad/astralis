@@ -65,17 +65,15 @@ Qualquer participante, inclusive visitante, pode transmitir quando houver uma va
 
 ### Qualidade da transmissão
 
-O padrão solicita **1080p, 60 fps e até 16 Mbps por espectador**. No seletor de compartilhamento, você pode ajustar:
+Toda nova transmissão começa em **Full HD (1080p)**, a maior resolução disponível no aplicativo, com alvo fixo de **60 fps**. O Astralis escolhe internamente um teto de **16 Mbps** para o vídeo. A qualidade inteligente vem ativada e divide esse orçamento de upload entre os espectadores, adaptando a distribuição à conexão de cada um. No seletor, você pode ajustar:
 
 | Opção | Valores disponíveis |
 | --- | --- |
 | Resolução | 576p, 720p e Full HD (1080p) |
-| Taxa de quadros | 15, 24, 30 e 60 fps |
-| Bitrate máximo | Aproximadamente 700 Kbps, 2, 4, 8 e 16 Mbps |
 | Tipo de conteúdo | Texto / código, para nitidez; Vídeo / jogo, para fluidez |
 | Qualidade inteligente | Divide o limite de bitrate entre os espectadores para poupar upload |
 
-Para jogos com bastante movimento, escolha **Vídeo / jogo**. Se a transmissão travar ou ficar borrada, experimente reduzir o bitrate, a resolução ou a taxa de quadros.
+Para jogos com bastante movimento, **Vídeo / jogo** já vem selecionado. Se a transmissão travar, mantenha a qualidade inteligente ativada e experimente reduzir a resolução.
 
 Os valores são limites solicitados, não uma garantia de qualidade. A transmissão depende do upload de quem compartilha, da conexão dos espectadores e da capacidade dos aparelhos. Sem qualidade inteligente, o consumo de upload cresce com cada espectador.
 
@@ -83,7 +81,9 @@ Os valores são limites solicitados, não uma garantia de qualidade. A transmiss
 
 O áudio da tela é opcional e sua disponibilidade varia conforme a fonte, o navegador e o sistema operacional. O Astralis não usa o microfone como chamada de voz dentro da sala.
 
-Ao compartilhar um monitor pelo app Windows, existe a opção experimental **Não enviar o áudio do Discord aos espectadores**. Ela tenta excluir o Discord do áudio transmitido, mantendo a conversa audível no seu computador. Se o filtro falhar, a captura continua sem áudio do sistema para evitar enviar a conversa.
+O filtro do Discord é ativado automaticamente a cada transmissão. Ao compartilhar um monitor no Windows, o Astralis usa o filtro por processo para manter a conversa audível apenas no seu computador. O filtro reconhece Discord, PTB, Canary e Development; se houver instâncias independentes que não possam ser excluídas juntas, a captura segue sem áudio. Janelas compartilham apenas o áudio do próprio processo, e uma janela do Discord fica sem áudio. Se o filtro não estiver disponível, inclusive na versão pelo navegador, a transmissão segue apenas com vídeo e mostra um aviso.
+
+O filtro usa a árvore de processos identificada ao iniciar a captura. Se você reiniciar o Discord ou abrir outra instância independente durante a transmissão, pare e inicie novamente o compartilhamento para atualizar a exclusão.
 
 ## Assistir a uma transmissão
 
@@ -111,7 +111,7 @@ Há uma fonte do YouTube por sala, gerenciada pelo anfitrião. Vídeos que bloqu
 - **Código inválido ou sala encerrada:** confirme o código com o anfitrião. Se ele encerrou a sala, será necessário criar outra.
 - **Transmissão caiu:** mantenha a sala aberta enquanto o app tenta reconectar. Se a captura tiver terminado, inicie o compartilhamento novamente. A sala pode encerrar se o anfitrião não recuperar a conexão.
 - **Vídeo sem som:** confira o silêncio e o volume do player e verifique se quem transmite ativou o áudio da tela.
-- **Conexão entre alguns amigos não funciona:** redes restritivas podem impedir a conexão direta do WebRTC. A configuração atual usa STUN e não inclui um servidor TURN.
+- **Conexão entre alguns amigos não funciona:** redes restritivas podem impedir a conexão direta do WebRTC. O app aceita TURN próprio com credenciais temporárias; sem a configuração do servidor, continua usando STUN. Veja [configuração TURN](docs/WEBRTC-TURN.md).
 - **Esqueceu a senha:** use a opção de recuperação na tela de login. O código temporário é fornecido pelo responsável pelo app; o procedimento de suporte está em [docs/SUPORTE-CONTAS.md](docs/SUPORTE-CONTAS.md).
 
 ## Desenvolvimento local

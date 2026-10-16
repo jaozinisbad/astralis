@@ -22,22 +22,30 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
   const [codigoAcesso, setCodigoAcesso] = useState('');
   const [codigoConviteCriado, setCodigoConviteCriado] = useState('');
   const requestIdRef = useRef(0);
+  const requestControllerRef = useRef(null);
   const entrandoRef = useRef(entrando);
   const dialogRef = useRef(null);
   entrandoRef.current = entrando;
 
   const listarSalas = useCallback(() => {
-    if (!socket || typeof socket.emit !== 'function') {
+    const requestId = ++requestIdRef.current;
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+    setCarregando(true);
+    setErroLista('');
+    // App cria o socket no efeito de montagem; sua ausência inicial é esperada.
+    if (!socket) return;
+    if (typeof socket.emit !== 'function') {
       setCarregando(false);
       setErroLista('Não foi possível conectar à lista de salas. Tente novamente.');
       return;
     }
 
-    const requestId = ++requestIdRef.current;
-    setCarregando(true);
-    setErroLista('');
-    emitirSolicitacaoSala(socket, 'salas:listar', {}).then((resultado = {}) => {
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    emitirSolicitacaoSala(socket, 'salas:listar', {}, { signal: controller.signal }).then((resultado = {}) => {
       if (requestId !== requestIdRef.current) return;
+      requestControllerRef.current = null;
       setCarregando(false);
       if (!resultado.ok) {
         setErroLista(mensagemDoErro(resultado.error, 'Não foi possível carregar as salas agora.'));
@@ -56,17 +64,30 @@ export default function RoomLobby({ socket, onCriar, onEntrar, onAbrirPerfil, on
     const aoAtualizarSalas = (resultado = {}) => {
       if (!Array.isArray(resultado.rooms)) return;
       requestIdRef.current += 1;
+      requestControllerRef.current?.abort();
+      requestControllerRef.current = null;
       setSalas(resultado.rooms);
       setCarregando(false);
       setErroLista('');
     };
+    const aoConectar = () => {
+      // Uma solicitação que já aguarda a primeira conexão será enviada pelo
+      // helper. Após uma queda ou erro concluído, é preciso buscar outro retrato.
+      if (!requestControllerRef.current) listarSalas();
+    };
 
     socket.on('salas:atualizadas', aoAtualizarSalas);
+    socket.on('connect', aoConectar);
     listarSalas();
 
     return () => {
       requestIdRef.current += 1;
-      if (typeof socket.off === 'function') socket.off('salas:atualizadas', aoAtualizarSalas);
+      requestControllerRef.current?.abort();
+      requestControllerRef.current = null;
+      if (typeof socket.off === 'function') {
+        socket.off('salas:atualizadas', aoAtualizarSalas);
+        socket.off('connect', aoConectar);
+      }
     };
   }, [socket, listarSalas]);
 

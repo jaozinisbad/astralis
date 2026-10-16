@@ -1,4 +1,5 @@
 const { randomBytes, randomUUID, timingSafeEqual } = require('node:crypto');
+const { createRoomIceConfiguration } = require('./iceConfig');
 
 const CODIGOS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -512,7 +513,7 @@ function createStreamRoomManager({
   };
 }
 
-function registrarEventosSala({ socket, io, manager }) {
+function registrarEventosSala({ socket, io, manager, getIceConfiguration = createRoomIceConfiguration }) {
   const reply = (callback, result) => {
     if (typeof callback === 'function') callback(result);
   };
@@ -840,6 +841,17 @@ function registrarEventosSala({ socket, io, manager }) {
     });
   });
 
+  socket.on('sala:ice-config', (dados, callback) => {
+    dados = objetoOuVazio(dados);
+    if (!dados.roomId || entradaPendente?.roomId === dados.roomId
+      || !manager.getSocketRole(socket.id, dados.roomId)
+      || !pertenceASala(socket.id, dados.roomId)) {
+      reply(callback, { ok: false, error: 'Entre na sala antes de configurar a conexão.' });
+      return;
+    }
+    reply(callback, { ok: true, ...getIceConfiguration({ socketId: socket.id }) });
+  });
+
   socket.on('sala:espectador-pronto', (dados, callback) => {
     dados = objetoOuVazio(dados);
     if (!dados.roomId || entradaPendente?.roomId === dados.roomId
@@ -850,9 +862,21 @@ function registrarEventosSala({ socket, io, manager }) {
     }
 
     const presenters = manager.getPresenters(dados.roomId);
-    for (const presenter of presenters) {
+    const requestedStream = dados.streamId;
+    if ((requestedStream !== undefined && (typeof requestedStream !== 'string'
+      || !presenters.some((presenter) => presenter.socketId === requestedStream)))
+      || (dados.restart === true && !requestedStream)) {
+      reply(callback, { ok: false, error: 'Transmissão indisponível para reconectar.' });
+      return;
+    }
+    for (const presenter of presenters.filter((item) => requestedStream === undefined || item.socketId === requestedStream)) {
       if (presenter.socketId !== socket.id) {
-        io.to(presenter.socketId).emit('sala:espectador-entrou', { salaId: dados.roomId, socketId: socket.id });
+        io.to(presenter.socketId).emit('sala:espectador-entrou', {
+          salaId: dados.roomId,
+          socketId: socket.id,
+          ...(requestedStream ? { streamId: requestedStream } : {}),
+          ...(dados.restart === true ? { restart: true } : {}),
+        });
       }
     }
     reply(callback, { ok: true, presenterSocketId: presenters[0]?.socketId ?? null, presenters });

@@ -1,13 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_STREAM_QUALITY, STREAM_QUALITY_OPTIONS } from '../streamQuality.mjs';
-import { requestScreenCapture } from '../screenCapture.mjs';
+import { requestScreenCapture, stopScreenCapture } from '../screenCapture.mjs';
 import WindowCaptureCompatibilityOption from './WindowCaptureCompatibilityOption.jsx';
-
-const LABEL_BITRATE = new Map([
-  [700_000, 'Baixo · ~700 Kbps'], [2_000_000, 'Médio · ~2 Mbps'],
-  [4_000_000, 'Alto · ~4 Mbps'], [8_000_000, 'Ultra · ~8 Mbps'],
-  [16_000_000, 'Máximo · ~16 Mbps'],
-]);
 
 export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
   const electronAPI = window.electronAPI;
@@ -18,6 +12,21 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
   const [carregando, setCarregando] = useState(hasNativeSources);
   const [erro, setErro] = useState('');
   const [compartilhando, setCompartilhando] = useState(false);
+  const pedidoCapturaRef = useRef(0);
+  const controladorCapturaRef = useRef(null);
+
+  function cancelarPedidoCaptura() {
+    pedidoCapturaRef.current += 1;
+    controladorCapturaRef.current?.abort();
+    controladorCapturaRef.current = null;
+  }
+
+  useEffect(() => () => cancelarPedidoCaptura(), []);
+
+  function fechar() {
+    cancelarPedidoCaptura();
+    onFechar();
+  }
 
   useEffect(() => {
     let ativo = true;
@@ -47,6 +56,10 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
 
   async function confirmar() {
     if (!fonteSelecionada) return;
+    controladorCapturaRef.current?.abort();
+    const controller = new AbortController();
+    controladorCapturaRef.current = controller;
+    const pedido = ++pedidoCapturaRef.current;
     setErro('');
     if (fonteSelecionada.tipo !== 'browser') {
       onSelecionar({
@@ -59,9 +72,14 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
 
     setCompartilhando(true);
     try {
-      const stream = await requestScreenCapture(quality, null);
+      const stream = await requestScreenCapture(quality, null, { signal: controller.signal });
+      if (pedido !== pedidoCapturaRef.current) {
+        await stopScreenCapture(stream, null);
+        return;
+      }
       onSelecionar({ ...quality, stream });
     } catch (error) {
+      if (pedido !== pedidoCapturaRef.current) return;
       setErro(error?.name === 'NotAllowedError' || error?.name === 'AbortError'
         ? 'A captura foi cancelada. Você pode escolher uma tela quando estiver pronto.'
         : 'Não consegui iniciar a captura. Verifique se este navegador permite compartilhar tela.');
@@ -70,7 +88,7 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
   }
 
   return (
-    <div className="modal-overlay screen-picker-overlay" onClick={onFechar}>
+    <div className="modal-overlay screen-picker-overlay" onClick={fechar}>
       <section className="modal screen-picker-modal screen-picker-modal--rooms" role="dialog" aria-modal="true" aria-labelledby="screen-picker-title" onClick={(event) => event.stopPropagation()}>
         <header className="screen-picker-heading">
           <div>
@@ -78,7 +96,7 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
             <h2 id="screen-picker-title">O que você quer transmitir?</h2>
             <p>Apenas a tela e o áudio escolhido. Microfone e conversa ficam no Discord.</p>
           </div>
-          <button type="button" className="screen-picker-close" onClick={onFechar} aria-label="Fechar seletor">×</button>
+          <button type="button" className="screen-picker-close" onClick={fechar} aria-label="Fechar seletor">×</button>
         </header>
 
         {carregando ? <p className="screen-picker-loading">Buscando telas disponíveis…</p> : erro && !fontes.length ? (
@@ -99,8 +117,8 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
               <label className="screen-quality-adaptive">
                 <input type="checkbox" checked={quality.adaptiveQuality} onChange={(event) => atualizar('adaptiveQuality', event.target.checked)} />
                 <span><strong>Qualidade inteligente</strong><small>{quality.adaptiveQuality
-                  ? 'Até ' + (quality.bitrate / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' Mbps de vídeo somados entre espectadores. Com estimativas disponíveis, o Astralis reaproveita o orçamento que uma conexão não consegue usar; sem elas, divide igualmente. Áudio e overhead usam upload adicional.'
-                  : 'Até ' + (quality.bitrate / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' Mbps de vídeo por espectador; o upload cresce com cada pessoa. A rede ainda pode reduzir o valor efetivo. Áudio e overhead usam upload adicional.'}</small></span>
+                  ? 'O Astralis ajusta o envio à conexão de cada espectador e divide o upload disponível.'
+                  : 'Cada espectador recebe o perfil completo; o uso de upload cresce com cada pessoa.'}</small></span>
               </label>
               <fieldset className="screen-content-type">
                 <legend>O que você está compartilhando</legend>
@@ -119,18 +137,8 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
                     {STREAM_QUALITY_OPTIONS.resolutions.map((value) => <option key={value} value={value}>{value === '1080p' ? 'Full HD (1080p)' : value}</option>)}
                   </select>
                 </label>
-                <label>Taxa de quadros
-                  <select value={quality.fps} onChange={(event) => atualizar('fps', Number(event.target.value))}>
-                    {STREAM_QUALITY_OPTIONS.fps.map((value) => <option key={value} value={value}>{value} fps</option>)}
-                  </select>
-                </label>
-                <label>Bitrate máximo
-                  <select value={quality.bitrate} onChange={(event) => atualizar('bitrate', Number(event.target.value))}>
-                    {STREAM_QUALITY_OPTIONS.bitrates.map((value) => <option key={value} value={value}>{LABEL_BITRATE.get(value)}</option>)}
-                  </select>
-                  <small>16 Mbps é um teto, não uma garantia: upload, Wi‑Fi e capacidade do computador influenciam o resultado.</small>
-                </label>
               </div>
+              <p className="screen-quality-note">60 fps · Melhor qualidade por padrão. A fluidez depende da tela, do computador e da conexão.</p>
               <label className="screen-quality-audio">
                 <input type="checkbox" checked={quality.shareAudio} onChange={(event) => atualizar('shareAudio', event.target.checked)} />
                 Compartilhar o áudio da tela
@@ -138,19 +146,14 @@ export default function ScreenShareSourcePicker({ onSelecionar, onFechar }) {
               {fonteSelecionada?.tipo === 'janela' && (
                 <WindowCaptureCompatibilityOption visible />
               )}
-              {hasNativeSources && fonteSelecionada?.tipo === 'tela' && (
-                <label className="screen-quality-audio screen-quality-audio--advanced">
-                  <input type="checkbox" checked={quality.ignoreDiscordAudio} onChange={(event) => atualizar('ignoreDiscordAudio', event.target.checked)} />
-                  Não enviar o áudio do Discord aos espectadores <small>Experimental · Windows</small>
-                </label>
-              )}
+              <p className="screen-quality-note">Filtro do Discord ativado automaticamente. Se o filtro não estiver disponível, a tela será compartilhada sem áudio.</p>
             </div>
           </div>
         )}
 
         {erro && <p className="rooms-error screen-picker-error" role="alert">{erro}</p>}
         <footer className="screen-picker-actions">
-          <button type="button" className="rooms-secondary-button" onClick={onFechar}>Cancelar</button>
+          <button type="button" className="rooms-secondary-button" onClick={fechar}>Cancelar</button>
           <button type="button" className="rooms-primary-button" disabled={!fonteSelecionada || carregando || compartilhando} onClick={confirmar}>
             {compartilhando ? 'Aguardando permissão…' : 'Compartilhar'}
           </button>

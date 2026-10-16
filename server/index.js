@@ -15,6 +15,7 @@ const recuperacaoRoutes = require('./routes/recuperacao');
 const eventosConta = require('./eventosConta');
 const { createSocketAuthMiddleware } = require('./socketAuth');
 const { createStreamRoomManager, registerStreamRoomEvents } = require('./streamRooms');
+const { createRoomIceConfiguration } = require('./iceConfig');
 
 const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -39,11 +40,13 @@ app.get('/', (req, res) => {
 // Verifica também o banco, que pode estar retomando após inatividade.
 app.get('/health', async (_req, res) => {
   res.set('Cache-Control', 'no-store');
+  const turnConfigured = createRoomIceConfiguration({ env: process.env }).iceServers
+    .some((iceServer) => Boolean(iceServer.username && iceServer.credential));
   try {
     await get('SELECT 1');
-    res.json({ status: 'ok' });
+    res.json({ status: 'ok', turnConfigured });
   } catch {
-    res.status(503).json({ status: 'unavailable' });
+    res.status(503).json({ status: 'unavailable', turnConfigured });
   }
 });
 

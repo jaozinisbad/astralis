@@ -1,8 +1,7 @@
 import { getAdaptiveVideoBitrateAllocations, getVideoEncodingParameters } from './streamQuality.mjs';
 import { summarizeWebRtcStats } from './streamStats.mjs';
 import { createIceConnectionHealthMonitor } from './iceConnectionHealth.mjs';
-
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+import { DEFAULT_ROOM_ICE_SERVERS, loadRoomIceConfiguration } from './roomIceConfiguration.mjs';
 
 export function createStreamRoomPeerSession({
   socket,
@@ -17,6 +16,7 @@ export function createStreamRoomPeerSession({
   onIceFailure = () => {},
   onPeerConnectionFailed = () => {},
   iceConnectionTimeoutMs = 20_000,
+  iceServers,
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
   reconnectDelayMs = 1_500,
   setTimeoutImpl = setTimeout,
@@ -31,6 +31,10 @@ export function createStreamRoomPeerSession({
   const candidatesWaitingForDescription = new Map();
   const reconnectTimers = new Map();
   const reconnectTimerResolvers = new Map();
+  const peerNegotiationQueues = new Map();
+  const localOfferNegotiations = new Map();
+  const remoteOfferNegotiations = new Map();
+  let negotiationSequence = 0;
   const iceMonitorsByPeer = new Map();
   const iceHealthByPeer = new Map();
   const recoveryAttemptsByPeer = new Map();
@@ -96,6 +100,72 @@ export function createStreamRoomPeerSession({
     // identifies a viewer's presenter; hosts only accept existing peers.
     if (!streamId) return true;
     return role === 'viewer' ? message.de === streamId : peers.has(message.de);
+  }
+
+  function createNegotiationId() {
+    const randomUuid = globalThis.crypto?.randomUUID;
+    if (typeof randomUuid === 'function') return randomUuid.call(globalThis.crypto);
+    negotiationSequence += 1;
+    return [Date.now().toString(36), negotiationSequence.toString(36), Math.random().toString(36).slice(2)].join('-');
+  }
+
+  function readNegotiationId(description) {
+    if (description?.negotiationId === undefined) return null;
+    if (typeof description.negotiationId !== 'string' || !description.negotiationId || description.negotiationId.length > 128) {
+      throw new TypeError('Identificador da negociação WebRTC inválido.');
+    }
+    return description.negotiationId;
+  }
+
+  function signaledDescription(description, negotiationId) {
+    return {
+      type: description.type,
+      sdp: description.sdp,
+      ...(negotiationId ? { negotiationId } : {}),
+    };
+  }
+
+  function isPeerCurrent(peerId, peer) {
+    return !closed && peers.get(peerId) === peer;
+  }
+
+  function candidateMatchesDescription(candidate, peer) {
+    // ICE credentials change when a peer is recreated. A delayed candidate
+    // from the old connection must not abort the new SDP/answer exchange.
+    const usernameFragment = candidate.usernameFragment
+      || /(?:^|\s)ufrag\s+(\S+)/.exec(candidate.candidate || '')?.[1];
+    if (!usernameFragment) return true;
+    const fragments = [...(peer.remoteDescription?.sdp || '').matchAll(/^a=ice-ufrag:([^\r\n]+)\r?$/gm)]
+      .map((match) => match[1]);
+    return fragments.length === 0 || fragments.includes(usernameFragment);
+  }
+
+  function queueCandidate(peerId, candidate) {
+    const waiting = candidatesWaitingForDescription.get(peerId) || [];
+    // A different ufrag can arrive before its replacement offer. Retain a
+    // bounded queue; applying the next SDP filters obsolete generations.
+    if (waiting.length >= 128) waiting.shift();
+    waiting.push(candidate);
+    candidatesWaitingForDescription.set(peerId, waiting);
+  }
+
+  function serializePeerNegotiation(peerId, peer, operation) {
+    const previous = peerNegotiationQueues.get(peerId) || Promise.resolve();
+    const queued = Promise.resolve(previous)
+      .catch(() => {})
+      .then(() => {
+        if (!isPeerCurrent(peerId, peer)) return;
+        return operation();
+      })
+      .catch((error) => {
+        if (!isPeerCurrent(peerId, peer)) return;
+        throw error;
+      })
+      .finally(() => {
+        if (peerNegotiationQueues.get(peerId) === queued) peerNegotiationQueues.delete(peerId);
+      });
+    peerNegotiationQueues.set(peerId, queued);
+    return queued;
   }
 
   function clearReconnectTimer(peerId) {
@@ -168,12 +238,14 @@ export function createStreamRoomPeerSession({
 
   function createPeer(peerId) {
     if (peers.has(peerId)) return peers.get(peerId);
-    const peer = new RTCPeerConnectionImpl({ iceServers: ICE_SERVERS });
+    const peer = new RTCPeerConnectionImpl({ iceServers: iceServers || DEFAULT_ROOM_ICE_SERVERS });
     peers.set(peerId, peer);
     peer.onicecandidate = ({ candidate }) => {
-      if (candidate) emitSignal('candidate', peerId, candidate);
+      if (candidate && isPeerCurrent(peerId, peer)) emitSignal('candidate', peerId, candidate);
     };
-    peer.ontrack = (event) => onRemoteStream(peerId, event.streams?.[0] || null);
+    peer.ontrack = (event) => {
+      if (isPeerCurrent(peerId, peer)) onRemoteStream(peerId, event.streams?.[0] || null);
+    };
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === 'connected') {
         clearReconnectTimer(peerId);
@@ -201,10 +273,26 @@ export function createStreamRoomPeerSession({
     return peer;
   }
 
+  async function configurePeerIce(peerId, peer) {
+    if (!iceServers) {
+      const configuredServers = await loadRoomIceConfiguration(socket, roomId);
+      if (!isPeerCurrent(peerId, peer)) return false;
+      if (typeof peer.setConfiguration === 'function') peer.setConfiguration({ iceServers: configuredServers });
+    }
+    return isPeerCurrent(peerId, peer);
+  }
+
   async function applyWaitingCandidates(peerId, peer) {
+    if (!isPeerCurrent(peerId, peer)) return false;
     const waiting = candidatesWaitingForDescription.get(peerId) || [];
     candidatesWaitingForDescription.delete(peerId);
-    for (const candidate of waiting) await peer.addIceCandidate(candidate);
+    for (const candidate of waiting) {
+      if (!isPeerCurrent(peerId, peer)) return false;
+      if (!candidateMatchesDescription(candidate, peer)) continue;
+      await peer.addIceCandidate(candidate);
+      if (!isPeerCurrent(peerId, peer)) return false;
+    }
+    return true;
   }
 
   function publishDiagnostics() {
@@ -503,7 +591,12 @@ export function createStreamRoomPeerSession({
       // it registered its listener. Re-send the same pending offer, never create
       // a second offer on the same RTCPeerConnection.
       if (!existingPeer.remoteDescription && existingPeer.localDescription?.type === 'offer') {
-        emitSignal('offer', peerId, existingPeer.localDescription);
+        let negotiation = localOfferNegotiations.get(peerId);
+        if (!negotiation || negotiation.peer !== existingPeer) {
+          negotiation = { peer: existingPeer, id: createNegotiationId() };
+          localOfferNegotiations.set(peerId, negotiation);
+        }
+        emitSignal('offer', peerId, signaledDescription(existingPeer.localDescription, negotiation.id));
       }
       return Promise.resolve();
     }
@@ -521,10 +614,16 @@ export function createStreamRoomPeerSession({
             schedulePeerRecovery(peerId, peer);
             return;
           }
+          if (!await configurePeerIce(peerId, peer)) return;
           iceMonitorsByPeer.get(peerId)?.start();
           const offer = await peer.createOffer();
+          if (!isPeerCurrent(peerId, peer)) return;
           await peer.setLocalDescription(offer);
-          emitSignal('offer', peerId, peer.localDescription || offer);
+          if (!isPeerCurrent(peerId, peer)) return;
+          const description = peer.localDescription || offer;
+          const negotiationId = createNegotiationId();
+          localOfferNegotiations.set(peerId, { peer, id: negotiationId });
+          emitSignal('offer', peerId, signaledDescription(description, negotiationId));
           return;
         }
         attempts += 1;
@@ -535,34 +634,91 @@ export function createStreamRoomPeerSession({
         }
         await waitForQualityRetry(peerId);
       }
-    })().finally(() => connecting.delete(peerId));
+    })().catch((error) => {
+      // Closing an old peer can reject its pending WebRTC operation after a
+      // restart already installed a replacement. Its callers must not close
+      // that replacement while handling the obsolete promise rejection.
+      if (connecting.get(peerId) !== connection) return;
+      throw error;
+    }).finally(() => {
+      if (connecting.get(peerId) === connection) connecting.delete(peerId);
+    });
     connecting.set(peerId, connection);
     return connection;
   }
 
   async function receiveOffer(message = {}) {
     if (closed || role !== 'viewer' || message.roomId !== roomId || !message.de || !message.descricao || !matchesSignal(message)) return;
-    const peer = createPeer(message.de);
-    if (peer.remoteDescription?.sdp === message.descricao.sdp && peer.localDescription?.type === 'answer') {
-      // The presenter can retry an offer if our first answer was lost. Re-send
-      // the existing answer rather than applying the same offer twice.
-      emitSignal('answer', message.de, peer.localDescription);
-      return;
-    }
-    iceMonitorsByPeer.get(message.de)?.start();
-    await peer.setRemoteDescription(message.descricao);
-    await applyWaitingCandidates(message.de, peer);
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    emitSignal('answer', message.de, peer.localDescription || answer);
+    const peerId = message.de;
+    const peer = createPeer(peerId);
+    return serializePeerNegotiation(peerId, peer, async () => {
+      const description = message.descricao;
+      if (description.type !== 'offer' || typeof description.sdp !== 'string' || !description.sdp.trim()) {
+        throw new TypeError('Oferta WebRTC inválida.');
+      }
+      const negotiationId = readNegotiationId(description);
+      const previousNegotiation = remoteOfferNegotiations.get(peerId);
+      const sameAppliedOffer = peer.remoteDescription?.type === 'offer'
+        && peer.remoteDescription.sdp === description.sdp
+        && peer.localDescription?.type === 'answer';
+      const sameNegotiation = negotiationId
+        ? previousNegotiation?.peer === peer && previousNegotiation.id === negotiationId && previousNegotiation.sdp === description.sdp
+        : true;
+      if (sameAppliedOffer && sameNegotiation) {
+        const cachedNegotiationId = negotiationId || previousNegotiation?.id || null;
+        emitSignal('answer', peerId, signaledDescription(peer.localDescription, cachedNegotiationId));
+        return;
+      }
+      if (negotiationId && previousNegotiation?.peer === peer && previousNegotiation.id === negotiationId
+        && previousNegotiation.sdp !== description.sdp) {
+        throw new Error('A mesma identificação WebRTC chegou com ofertas diferentes.');
+      }
+      if (!await configurePeerIce(peerId, peer)) return;
+      iceMonitorsByPeer.get(peerId)?.start();
+      await peer.setRemoteDescription({ type: description.type, sdp: description.sdp });
+      if (!isPeerCurrent(peerId, peer)) return;
+      remoteOfferNegotiations.set(peerId, { peer, id: negotiationId, sdp: description.sdp });
+      if (!await applyWaitingCandidates(peerId, peer)) return;
+      const answer = await peer.createAnswer();
+      if (!isPeerCurrent(peerId, peer)) return;
+      await peer.setLocalDescription(answer);
+      if (!isPeerCurrent(peerId, peer)) return;
+      const answerDescription = peer.localDescription || answer;
+      emitSignal('answer', peerId, signaledDescription(answerDescription, negotiationId));
+    });
   }
 
   async function receiveAnswer(message = {}) {
     if (closed || role !== 'host' || message.roomId !== roomId || !message.de || !message.resposta || !matchesSignal(message)) return;
-    const peer = peers.get(message.de);
+    const peerId = message.de;
+    const peer = peers.get(peerId);
     if (!peer) return;
-    await peer.setRemoteDescription(message.resposta);
-    await applyWaitingCandidates(message.de, peer);
+    return serializePeerNegotiation(peerId, peer, async () => {
+      const description = message.resposta;
+      if (description.type !== 'answer' || typeof description.sdp !== 'string' || !description.sdp.trim()) {
+        throw new TypeError('Resposta WebRTC inválida.');
+      }
+      const negotiationId = readNegotiationId(description);
+      const localNegotiation = localOfferNegotiations.get(peerId);
+      if (negotiationId && (!localNegotiation || localNegotiation.peer !== peer || localNegotiation.id !== negotiationId)) {
+        return;
+      }
+      if (peer.signalingState === 'stable') {
+        if (peer.remoteDescription?.type === 'answer'
+          && peer.remoteDescription.sdp === description.sdp
+          && (!negotiationId || (localNegotiation?.peer === peer && localNegotiation.id === negotiationId))) {
+          return;
+        }
+        // A structurally valid answer outside have-local-offer belongs to an
+        // already-finished or superseded negotiation. Do not surface relay
+        // replays as a persistent user-facing signaling error.
+        return;
+      }
+      if (peer.signalingState !== 'have-local-offer' || peer.localDescription?.type !== 'offer') return;
+      await peer.setRemoteDescription({ type: description.type, sdp: description.sdp });
+      if (!isPeerCurrent(peerId, peer)) return;
+      await applyWaitingCandidates(peerId, peer);
+    });
   }
 
   async function receiveCandidate(message = {}) {
@@ -570,10 +726,8 @@ export function createStreamRoomPeerSession({
     let peer = peers.get(message.de);
     if (!peer && role === 'viewer') peer = createPeer(message.de);
     if (!peer) return;
-    if (!peer.remoteDescription) {
-      const waiting = candidatesWaitingForDescription.get(message.de) || [];
-      waiting.push(message.candidato);
-      candidatesWaitingForDescription.set(message.de, waiting);
+    if (!peer.remoteDescription || !candidateMatchesDescription(message.candidato, peer)) {
+      queueCandidate(message.de, message.candidato);
       return;
     }
     await peer.addIceCandidate(message.candidato);
@@ -581,6 +735,9 @@ export function createStreamRoomPeerSession({
 
   function closePeer(peerId, preserveViewer = false, preserveRecovery = false) {
     clearReconnectTimer(peerId);
+    peerNegotiationQueues.delete(peerId);
+    localOfferNegotiations.delete(peerId);
+    remoteOfferNegotiations.delete(peerId);
     const iceMonitor = iceMonitorsByPeer.get(peerId);
     iceMonitor?.close();
     iceMonitorsByPeer.delete(peerId);
@@ -622,7 +779,7 @@ export function createStreamRoomPeerSession({
       || (message.streamId !== undefined && message.streamId !== streamId)) return;
     viewers.add(message.socketId);
     const peer = peers.get(message.socketId);
-    if (peer && ['disconnected', 'failed', 'closed'].includes(peer.connectionState)) {
+    if (peer && (message.restart === true || ['disconnected', 'failed', 'closed'].includes(peer.connectionState))) {
       closePeer(message.socketId, true);
     }
     if (localStream) connectViewer(message.socketId).catch(() => closePeer(message.socketId));

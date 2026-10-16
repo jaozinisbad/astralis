@@ -126,6 +126,35 @@ test('mostra erro de listagem recebido pelo callback do socket', async () => {
   assert.ok(botao(renderer, 'Tentar novamente'));
 });
 
+test('aguarda a criação do socket sem mostrar erro na primeira renderização', async () => {
+  const { renderer, configuracao } = await montar({ socket: null });
+  assert.equal(renderer.root.findAllByProps({ role: 'alert' }).length, 0);
+  assert.match(texto(renderer), /Buscando transmissões abertas/);
+
+  const socket = new SocketDeTeste();
+  await act(async () => renderer.update(React.createElement(RoomLobby, { ...configuracao, socket })));
+  assert.equal(socket.emits[0][0], 'salas:listar');
+  await act(async () => socket.emits[0][2]({ ok: true, rooms: [] }));
+  assert.match(texto(renderer), /Nenhuma sala pública ao vivo/);
+  await act(async () => renderer.unmount());
+});
+
+test('recupera a lista e remove o erro quando o socket reconecta', async () => {
+  const socket = new SocketDeTeste();
+  const { renderer } = await montar({ socket });
+  await act(async () => socket.emits[0][2]({ ok: false, error: 'Sem conexão.' }));
+  assert.match(texto(renderer), /Sem conexão/);
+
+  assert.equal(typeof socket.listeners.get('connect'), 'function');
+  await act(async () => socket.listeners.get('connect')());
+  assert.equal(socket.emits.length, 2);
+  assert.equal(renderer.root.findAllByProps({ role: 'alert' }).length, 0);
+  await act(async () => socket.emits[1][2]({ ok: true, rooms: [{ id: 'volta', name: 'Transmissão recuperada' }] }));
+  assert.match(texto(renderer), /Transmissão recuperada/);
+  await act(async () => renderer.unmount());
+  assert.equal(socket.listeners.has('connect'), false);
+});
+
 test('submete nome e visibilidade escolhidos ao callback de criação', async () => {
   const criar = [];
   const { renderer } = await montar({ onCriar: async (dados) => { criar.push(dados); return { ok: true }; } });
