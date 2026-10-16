@@ -888,7 +888,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
               playsInline
               muted
               ref={(el) => {
-                if (el) el.srcObject = streamSelecionada;
+                if (el && el.srcObject !== streamSelecionada) el.srcObject = streamSelecionada;
               }}
             />
             <div className="tela-tile__label">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Alguém'}</div>

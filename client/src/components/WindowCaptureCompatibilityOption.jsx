@@ -57,9 +57,9 @@ export default function WindowCaptureCompatibilityOption({ visible }) {
           onChange={(event) => setSelecionada(event.target.checked)}
         />
         <span>
-          <strong>Testar captura de janela sem borda</strong>
+          <strong>Captura legada sem borda (experimental)</strong>
           <small>
-            Usa uma alternativa de captura de janela e pode remover a borda amarela. Alguns jogos com saída DirectX podem aparecer pretos. O áudio da janela não muda.
+            Pode remover a borda amarela, mas pode causar tela preta ou piscadas em jogos. Se isso acontecer, desative esta opção. O áudio da janela não muda.
           </small>
         </span>
       </label>

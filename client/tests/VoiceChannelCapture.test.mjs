@@ -115,3 +115,61 @@ test('legacy voice sharing closes capture that is granted after the channel unmo
     }
   }
 });
+
+test('voice preview keeps its MediaStream attached across unrelated renders', async () => {
+  const previous = Object.fromEntries(['window', 'navigator', 'document', 'localStorage'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const track = { kind: 'video', getSettings: () => ({ height: 1080 }), stop() {} };
+  const stream = { getTracks: () => [track], getVideoTracks: () => [track], getAudioTracks: () => [] };
+  const values = {
+    window: {}, document: { addEventListener() {}, removeEventListener() {} },
+    localStorage: { getItem: () => null },
+    navigator: { mediaDevices: {
+      getUserMedia: async () => { throw Object.assign(new Error('No microphone in preview test'), { name: 'NotFoundError' }); },
+    } },
+  };
+  for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, { configurable: true, value });
+  const assignments = [];
+  let attachedStream = null;
+  const videoElement = {};
+  Object.defineProperty(videoElement, 'srcObject', {
+    get: () => attachedStream,
+    set(value) { attachedStream = value; assignments.push(value); },
+  });
+  let renderer;
+  try {
+    const ref = React.createRef();
+    const socket = { id: 'self', on() {}, off() {}, emit() {} };
+    const render = (name) => React.createElement(VoiceChannel, {
+      ref, canal: { id: 'voice', nome: name }, socket,
+    });
+    await act(async () => {
+      renderer = TestRenderer.create(render('Voz'), {
+        createNodeMock: ({ type }) => type === 'video' ? videoElement : null,
+      });
+    });
+    await act(async () => ref.current.iniciarCompartilhamento({ stream, shareAudio: false }));
+    await act(async () => ref.current.alternarTransmissao('self'));
+    assert.equal(renderer.root.findAllByType('video').length, 1);
+    assert.deepEqual(assignments, [stream]);
+
+    for (let index = 0; index < 6; index += 1) {
+      await act(async () => renderer.update(render(`Voz ${index}`)));
+    }
+    assert.deepEqual(assignments, [stream], 'reassigning the same srcObject reloads playback in Chromium');
+
+    await act(async () => ref.current.pararCompartilhamento());
+    assert.equal(renderer.root.findAllByType('video').length, 0);
+    const replacement = { ...stream };
+    await act(async () => ref.current.iniciarCompartilhamento({ stream: replacement, shareAudio: false }));
+    await act(async () => ref.current.alternarTransmissao('self'));
+    await act(async () => renderer.update(render('Nova transmissão')));
+    assert.deepEqual(assignments, [stream, replacement], 'starting another capture must attach the replacement once');
+    assert.equal(renderer.root.findByType('video').props.muted, true);
+  } finally {
+    if (renderer) await act(async () => renderer.unmount());
+    for (const [key, descriptor] of Object.entries(previous)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  }
+});

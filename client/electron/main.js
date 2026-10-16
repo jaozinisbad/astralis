@@ -6,6 +6,7 @@ const fs = require('fs');
 const {
   WGC_WINDOW_FEATURE,
   addDisabledFeature,
+  removeFeatureFromSwitchArgs,
   supportsWindows10WindowCaptureCompatibility,
 } = require('./windowCaptureCompatibility.cjs');
 const { createManualUpdater } = require('./manualUpdater.cjs');

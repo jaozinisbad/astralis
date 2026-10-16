@@ -52,7 +52,7 @@ afterEach(async () => {
   else globalThis.RTCPeerConnection = originalPeerConnection;
 });
 
-async function showRoom(presenters, { socketId = 'watcher', localStream = null, reservedPresenterSlot = false, onStopShare = () => {} } = {}) {
+async function showRoom(presenters, { socketId = 'watcher', localStream = null, reservedPresenterSlot = false, onStopShare = () => {}, createVideoNode } = {}) {
   FakePeerConnection.instances = [];
   globalThis.RTCPeerConnection = FakePeerConnection;
   const listeners = new Map();
@@ -77,8 +77,8 @@ async function showRoom(presenters, { socketId = 'watcher', localStream = null, 
     renderer = TestRenderer.create(React.createElement(StreamRoom, {
       socket, roomId: 'room-1', role: 'viewer', room, joinedInitially: true,
       localStream, onRequestShare() {}, onStopShare, onExit() {},
-    }), { createNodeMock: ({ type }) => type === 'video'
-      ? { srcObject: null, volume: 1, muted: true, play: async () => {} }
+    }), { createNodeMock: ({ type, props }) => type === 'video'
+      ? createVideoNode?.(props) || { srcObject: null, volume: 1, muted: true, play: async () => {} }
       : null });
   });
   renderers.push(renderer);
@@ -176,4 +176,46 @@ test('switching selected streams mutes the newly selected stream until audio is 
   const back = renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === 'Voltar às transmissões');
   await act(async () => back.props.onClick());
   assert.equal(renderer.root.findAll((node) => node.type === 'video' && node.props.muted === false).length, 0);
+});
+
+test('viewer diagnostics and repeated tracks keep the playing stage attached to the same stream', async () => {
+  const presenters = [{ socketId: 'alex', name: 'Alex' }];
+  const stageNodes = [];
+  const assignments = [];
+  const { renderer, dispatch } = await showRoom(presenters, {
+    createVideoNode(props) {
+      if (!props['data-stream-stage-video']) return null;
+      let attachedStream = null;
+      const node = { volume: 1, muted: true, play: async () => {} };
+      Object.defineProperty(node, 'srcObject', {
+        get: () => attachedStream,
+        set(value) { attachedStream = value; assignments.push(value); },
+      });
+      stageNodes.push(node);
+      return node;
+    },
+  });
+  await dispatch('sala:sinal:oferta', {
+    roomId: 'room-1', de: 'alex', streamId: 'alex',
+    descricao: { type: 'offer', sdp: 'alex' },
+  });
+  const peer = FakePeerConnection.instances.at(-1);
+  const stream = { id: 'alex-media', getAudioTracks: () => [{ id: 'alex-audio' }] };
+  await act(async () => peer.ontrack({ streams: [stream], track: { kind: 'video' } }));
+  const stage = renderer.root.findByProps({ 'data-stream-stage-video': true });
+
+  for (let index = 0; index < 6; index += 1) {
+    await act(async () => {
+      peer.connectionState = 'connected';
+      peer.onconnectionstatechange();
+      peer.ontrack({ streams: [stream], track: { kind: 'audio' } });
+    });
+    await dispatch('sala:estado', {
+      sala: { id: 'room-1', name: 'Partida', isLive: true, presenters: [{ ...presenters[0] }] },
+    });
+  }
+
+  assert.equal(renderer.root.findByProps({ 'data-stream-stage-video': true }), stage);
+  assert.equal(stageNodes.length, 1, 'diagnostics must not remount the stage video');
+  assert.deepEqual(assignments, [stream], 'the playing video must not be cleared or reattached during refresh');
 });
