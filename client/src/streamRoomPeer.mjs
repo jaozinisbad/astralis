@@ -1,7 +1,8 @@
-import { getAdaptiveVideoBitrateAllocations, getVideoEncodingParameters } from './streamQuality.mjs';
+import { getAdaptiveVideoBitrateAllocations, getVideoEncodingParameters, resolveStreamQuality } from './streamQuality.mjs';
 import { summarizeWebRtcStats } from './streamStats.mjs';
 import { createIceConnectionHealthMonitor } from './iceConnectionHealth.mjs';
 import { DEFAULT_ROOM_ICE_SERVERS, loadRoomIceConfiguration } from './roomIceConfiguration.mjs';
+import { resolveVideoCodecPreferences } from './streamCodecs.mjs';
 
 export function createStreamRoomPeerSession({
   socket,
@@ -18,6 +19,7 @@ export function createStreamRoomPeerSession({
   iceConnectionTimeoutMs = 20_000,
   iceServers,
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
+  resolveVideoCodecPreferencesImpl = resolveVideoCodecPreferences,
   reconnectDelayMs = 1_500,
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
@@ -48,12 +50,14 @@ export function createStreamRoomPeerSession({
   const adaptiveCapacityByPeer = new Map();
   const bandwidthPressureSamplesByPeer = new Map();
   const bandwidthHeadroomSamplesByPeer = new Map();
+  const stableMediaSamplesByPeer = new Map();
   const allocatedBitrateByPeer = new Map();
   const allocatedDegradationPreferenceByPeer = new Map();
   const previousStatsByPeer = new Map();
   const peerStatsByPeer = new Map();
+  const videoCodecPreferencesByTrack = new WeakMap();
   let localStream = null;
-  let currentQuality = quality;
+  let currentQuality = resolveStreamQuality(quality);
   let closed = false;
   let collectingStats = false;
   let bitrateUpdatePromise = null;
@@ -488,6 +492,7 @@ export function createStreamRoomPeerSession({
       adaptiveCapacityByPeer.delete(peerId);
       bandwidthPressureSamplesByPeer.delete(peerId);
       bandwidthHeadroomSamplesByPeer.delete(peerId);
+      stableMediaSamplesByPeer.delete(peerId);
     }
   }
 
@@ -501,13 +506,50 @@ export function createStreamRoomPeerSession({
         try {
           report = await peer.getStats();
         } catch {
+          if (isPeerCurrent(peerId, peer)) {
+            bandwidthHeadroomSamplesByPeer.delete(peerId);
+            if ((stableMediaSamplesByPeer.get(peerId) || 0) < 2) stableMediaSamplesByPeer.delete(peerId);
+          }
           return;
         }
         if (closed || peers.get(peerId) !== peer) return;
 
-        const { metrics, counters } = summarizeWebRtcStats(report, previousStatsByPeer.get(peerId));
-        if (!metrics.direction) return;
-        previousStatsByPeer.set(peerId, counters);
+        const previousCounters = previousStatsByPeer.get(peerId);
+        const { metrics, counters } = summarizeWebRtcStats(report, previousCounters);
+        if (!metrics.direction) {
+          bandwidthHeadroomSamplesByPeer.delete(peerId);
+          if ((stableMediaSamplesByPeer.get(peerId) || 0) < 2) stableMediaSamplesByPeer.delete(peerId);
+          return;
+        }
+        const sourceRestarted = previousCounters && counters
+          && (counters.identity !== previousCounters.identity
+            || (Number.isFinite(counters.bytes) && Number.isFinite(previousCounters.bytes) && counters.bytes < previousCounters.bytes)
+            || (Number.isFinite(counters.frames) && Number.isFinite(previousCounters.frames) && counters.frames < previousCounters.frames));
+        const timestampRegressed = Number.isFinite(counters?.timestamp) && Number.isFinite(previousCounters?.timestamp)
+          && counters.timestamp < previousCounters.timestamp;
+        if (sourceRestarted || timestampRegressed) {
+          stableMediaSamplesByPeer.delete(peerId);
+          bandwidthPressureSamplesByPeer.delete(peerId);
+          bandwidthHeadroomSamplesByPeer.delete(peerId);
+        }
+        if (sourceRestarted && !timestampRegressed) {
+          // A new SSRC or reset encoder counters belong to a new media source.
+          // Its first BWE must not inherit a ceiling learned from the old one.
+          adaptiveCapacityByPeer.delete(peerId);
+          availableOutgoingByPeer.delete(peerId);
+          availableOutgoingSampledAtByPeer.delete(peerId);
+        }
+        const freshInterval = !sourceRestarted && counters?.identity === previousCounters?.identity
+          && Number.isFinite(counters?.timestamp) && Number.isFinite(previousCounters?.timestamp)
+          && counters.timestamp > previousCounters.timestamp;
+        const freshSample = Number.isFinite(counters?.timestamp)
+          && (counters?.identity !== previousCounters?.identity
+            || !Number.isFinite(previousCounters?.timestamp) || freshInterval);
+        // Keep the latest counter baseline when getStats repeats a cached
+        // report or resolves with an older snapshot.
+        if (counters?.identity !== previousCounters?.identity
+          || !Number.isFinite(previousCounters?.timestamp)
+          || counters?.timestamp > previousCounters.timestamp) previousStatsByPeer.set(peerId, counters);
         peerStatsByPeer.set(peerId, { ...metrics, sampledAt: Date.now() });
 
         if (role === 'host' && Number.isFinite(metrics.availableOutgoingBitrate)
@@ -529,7 +571,24 @@ export function createStreamRoomPeerSession({
             ?? getVideoEncodingParameters(currentQuality, Math.max(1, viewers.size)).maxBitrate;
           const estimateIsLow = estimate < appliedCap * 0.85;
           const estimateIsRecovering = previous !== undefined && estimate > previous * 1.12;
+          const stableMediaSamples = stableMediaSamplesByPeer.get(peerId) || 0;
+          if (freshInterval && metrics.qualityLimitationReason === 'none'
+            && Number.isFinite(metrics.bitrateBps) && metrics.bitrateBps >= appliedCap * 0.7 && metrics.bitrateBps > 0
+            && Number.isFinite(metrics.framesPerSecond) && metrics.framesPerSecond > 0) {
+            stableMediaSamplesByPeer.set(peerId, Math.min(2, stableMediaSamples + 1));
+          } else if (stableMediaSamples < 2) {
+            stableMediaSamplesByPeer.delete(peerId);
+          }
+          // "bandwidth" is also reported while the native controller probes a
+          // new connection. A low initial BWE is not a measured link limit.
+          // Let WebRTC complete its ramp-up unless the connection previously
+          // delivered stable media or independent receiver feedback shows loss
+          // or delay. The native controller still limits the actual send rate.
+          const hasIndependentNetworkPressure = (Number.isFinite(metrics.fractionLost) && metrics.fractionLost >= 0.03)
+            || (Number.isFinite(metrics.roundTripTimeSeconds) && metrics.roundTripTimeSeconds >= 0.25);
+          const canUseEstimateAsCeiling = stableMediaSamplesByPeer.get(peerId) >= 2 || hasIndependentNetworkPressure;
           const sustainedBandwidthPressure = currentQuality.adaptiveQuality
+            && freshSample && canUseEstimateAsCeiling
             && metrics.qualityLimitationReason === 'bandwidth'
             && estimateIsLow
             && !estimateIsRecovering;
@@ -555,14 +614,32 @@ export function createStreamRoomPeerSession({
           }
 
           const confirmedCapacity = adaptiveCapacityByPeer.get(peerId);
+          const hasMeasuredHeadroom = estimate > confirmedCapacity * 1.25;
+          // A reduced sender cap also limits the traffic from which WebRTC can
+          // estimate capacity. Waiting only for a larger estimate can therefore
+          // keep a recovered path permanently pinned to its old cap. After six
+          // healthy, fully observed intervals, open the ceiling a little so the
+          // native congestion controller can probe again. This does not force
+          // a send rate or change the aggregate room budget.
+          const canProbeRecovery = metrics.qualityLimitationReason === 'none'
+            && appliedCap > 0
+            && appliedCap >= Math.floor(confirmedCapacity * 0.85) * 0.95
+            && Number.isFinite(metrics.bitrateBps) && metrics.bitrateBps >= appliedCap * 0.7
+            && Number.isFinite(metrics.framesPerSecond) && metrics.framesPerSecond > 0
+            && Number.isFinite(metrics.roundTripTimeSeconds) && metrics.roundTripTimeSeconds >= 0
+            && metrics.roundTripTimeSeconds <= 0.2
+            && Number.isFinite(metrics.fractionLost) && metrics.fractionLost >= 0 && metrics.fractionLost <= 0.02
+            && estimate >= appliedCap * 0.9;
           if (currentQuality.adaptiveQuality && Number.isFinite(confirmedCapacity)
-            && metrics.qualityLimitationReason !== 'cpu'
-            && estimate > confirmedCapacity * 1.25) {
+            && freshInterval && metrics.qualityLimitationReason !== 'cpu'
+            && (hasMeasuredHeadroom || canProbeRecovery)) {
             const headroomSamples = (bandwidthHeadroomSamplesByPeer.get(peerId) || 0) + 1;
             bandwidthHeadroomSamplesByPeer.set(peerId, headroomSamples);
             if (headroomSamples >= 6) {
-              const step = Math.max(100_000, Math.floor(confirmedCapacity * 0.15));
-              adaptiveCapacityByPeer.set(peerId, Math.min(estimate, confirmedCapacity + step));
+              const step = Math.max(hasMeasuredHeadroom ? 100_000 : 1, Math.floor(confirmedCapacity * 0.15));
+              const selectedBudget = getVideoEncodingParameters(currentQuality, 1).maxBitrate;
+              const nextCapacity = Math.min(selectedBudget / 0.85, confirmedCapacity + step);
+              adaptiveCapacityByPeer.set(peerId, hasMeasuredHeadroom ? Math.min(estimate, nextCapacity) : nextCapacity);
               bandwidthHeadroomSamplesByPeer.set(peerId, 0);
             }
           } else if (adaptiveCapacityByPeer.has(peerId)) {
@@ -571,6 +648,7 @@ export function createStreamRoomPeerSession({
         } else if (role === 'host') {
           bandwidthPressureSamplesByPeer.delete(peerId);
           bandwidthHeadroomSamplesByPeer.delete(peerId);
+          if ((stableMediaSamplesByPeer.get(peerId) || 0) < 2) stableMediaSamplesByPeer.delete(peerId);
         }
       }));
 
@@ -604,6 +682,23 @@ export function createStreamRoomPeerSession({
       const peer = createPeer(peerId);
       if (!peer.getSenders().some((sender) => sender.track && localStream.getTracks().includes(sender.track))) {
         localStream.getTracks().forEach((track) => peer.addTrack(track, localStream));
+      }
+      const videoTransceiver = peer.getTransceivers?.().find((item) => item.sender?.track?.kind === 'video');
+      if (typeof videoTransceiver?.setCodecPreferences === 'function') {
+        const track = videoTransceiver.sender.track;
+        let preferencesPromise = videoCodecPreferencesByTrack.get(track);
+        if (!preferencesPromise) {
+          preferencesPromise = Promise.resolve()
+            .then(() => resolveVideoCodecPreferencesImpl({ quality: currentQuality, track }))
+            .catch(() => []);
+          videoCodecPreferencesByTrack.set(track, preferencesPromise);
+        }
+        const preferences = await preferencesPromise;
+        if (!isPeerCurrent(peerId, peer)) return;
+        if (preferences?.length) {
+          // Optional optimization: unsupported preferences must not block a stream.
+          try { videoTransceiver.setCodecPreferences(preferences); } catch {}
+        }
       }
       let attempts = 0;
       while (!closed && peers.get(peerId) === peer && localStream && viewers.has(peerId)) {
@@ -756,6 +851,7 @@ export function createStreamRoomPeerSession({
     adaptiveCapacityByPeer.delete(peerId);
     bandwidthPressureSamplesByPeer.delete(peerId);
     bandwidthHeadroomSamplesByPeer.delete(peerId);
+    stableMediaSamplesByPeer.delete(peerId);
     allocatedBitrateByPeer.delete(peerId);
     allocatedDegradationPreferenceByPeer.delete(peerId);
     if (!peer) {
@@ -828,11 +924,18 @@ export function createStreamRoomPeerSession({
     setViewers,
     resetPeers,
     setQuality(nextQuality = {}) {
-      currentQuality = nextQuality;
-      if (!currentQuality.adaptiveQuality) {
+      const resolved = resolveStreamQuality(nextQuality);
+      const profileChanged = ['resolution', 'fps', 'bitrate', 'contentType', 'adaptiveQuality']
+        .some((key) => resolved[key] !== currentQuality[key]);
+      currentQuality = resolved;
+      if (profileChanged || !currentQuality.adaptiveQuality) {
         adaptiveCapacityByPeer.clear();
         bandwidthPressureSamplesByPeer.clear();
         bandwidthHeadroomSamplesByPeer.clear();
+        stableMediaSamplesByPeer.clear();
+        availableOutgoingByPeer.clear();
+        availableOutgoingSampledAtByPeer.clear();
+        previousStatsByPeer.clear();
       }
       if (role === 'host') return updateVideoBitrates();
       return Promise.resolve(true);
@@ -861,6 +964,7 @@ export function createStreamRoomPeerSession({
       adaptiveCapacityByPeer.clear();
       bandwidthPressureSamplesByPeer.clear();
       bandwidthHeadroomSamplesByPeer.clear();
+      stableMediaSamplesByPeer.clear();
       allocatedBitrateByPeer.clear();
       allocatedDegradationPreferenceByPeer.clear();
       previousStatsByPeer.clear();

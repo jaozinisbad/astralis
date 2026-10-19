@@ -25,3 +25,6 @@ Thumbs.db
 .neon
 
 client/release-*/
+
+# Artefatos locais de verificação visual
+.playwright-mcp/

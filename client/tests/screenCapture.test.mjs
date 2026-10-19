@@ -52,6 +52,37 @@ test('screen capture: detail profile keeps the detail hint', async () => {
   }
 });
 
+test('screen capture: Electron windows keep a resolution ceiling without forcing a 16:9 output', async () => {
+  const requests = [];
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { mediaDevices: { getUserMedia: async (options) => {
+      requests.push(options);
+      return new FakeStream([{ kind: 'video', stop() {} }]);
+    } } },
+  });
+  try {
+    for (const [resolution, width, height] of [['576p', 1024, 576], ['720p', 1280, 720], ['1080p', 1920, 1080]]) {
+      const stream = await requestScreenCapture({
+        fonteId: 'window:45678:0', resolution, fps: 30, shareAudio: false,
+      }, {});
+      const constraints = requests.at(-1).video.mandatory;
+      assert.equal(constraints.maxWidth, width);
+      assert.equal(constraints.maxHeight, height);
+      assert.equal('minWidth' in constraints, false, 'a smaller source must not be padded to the selected width');
+      assert.equal('minHeight' in constraints, false, 'a portrait source must keep its own aspect ratio');
+      assert.equal(constraints.minFrameRate, 60);
+      assert.equal(constraints.maxFrameRate, 60);
+      assert.equal(requests.at(-1).audio, false);
+      await stopScreenCapture(stream, {});
+    }
+  } finally {
+    if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
 test('screen capture: applies selected source and excludes Discord audio on Electron', async () => {
   const videoTrack = { kind: 'video', stop() { this.stopped = true; } };
   const filteredAudio = { kind: 'audio', stop() { this.stopped = true; } };

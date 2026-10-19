@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useDialogFocus } from '../useDialogFocus.mjs';
 
 export default function AddServerModal({ onFechar, onCriar, onEntrar }) {
   const [modo, setModo] = useState('criar'); // 'criar' | 'entrar'
@@ -6,6 +7,7 @@ export default function AddServerModal({ onFechar, onCriar, onEntrar }) {
   const [codigo, setCodigo] = useState('');
   const [erro, setErro] = useState('');
   const [carregando, setCarregando] = useState(false);
+  const dialogRef = useDialogFocus(onFechar);
 
   async function confirmar(e) {
     e.preventDefault();
@@ -31,26 +33,32 @@ export default function AddServerModal({ onFechar, onCriar, onEntrar }) {
 
   return (
     <div className="modal-overlay" onClick={onFechar}>
-      <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={confirmar}>
+      <form className="modal" role="dialog" aria-modal="true" aria-label="Criar ou entrar em servidor" ref={dialogRef} tabIndex={-1} onClick={(e) => e.stopPropagation()} onSubmit={confirmar}>
         <div className="modal-tabs">
-          <div
+          <button type="button"
             className={`modal-tab${modo === 'criar' ? ' active' : ''}`}
+            aria-pressed={modo === 'criar'}
+            style={{ border: 0, background: 'transparent', font: 'inherit' }}
             onClick={() => setModo('criar')}
           >
             Criar servidor
-          </div>
-          <div
+          </button>
+          <button type="button"
             className={`modal-tab${modo === 'entrar' ? ' active' : ''}`}
+            aria-pressed={modo === 'entrar'}
+            style={{ border: 0, background: 'transparent', font: 'inherit' }}
             onClick={() => setModo('entrar')}
           >
             Entrar com convite
-          </div>
+          </button>
         </div>
 
         {modo === 'criar' ? (
           <input
             autoFocus
             placeholder="Nome do servidor"
+            aria-label="Nome do servidor"
+            data-dialog-initial
             value={nome}
             onChange={(e) => setNome(e.target.value)}
             maxLength={50}
@@ -61,13 +69,14 @@ export default function AddServerModal({ onFechar, onCriar, onEntrar }) {
           <input
             autoFocus
             placeholder="Código de convite"
+            aria-label="Código de convite"
             value={codigo}
             onChange={(e) => setCodigo(e.target.value)}
             className="modal-input"
           />
         )}
 
-        {erro && <div className="modal-erro">{erro}</div>}
+        {erro && <div className="modal-erro" role="alert">{erro}</div>}
 
         <div className="modal-acoes">
           <button type="button" onClick={onFechar} className="modal-botao-secundario">

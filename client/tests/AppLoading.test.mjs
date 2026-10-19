@@ -23,6 +23,7 @@ function pluginDeStubs() {
     resolveId(id) {
       if (id === 'socket.io-client') return '\0socket.io-client-test-stub';
       const componente = id.match(/^\.\/components\/(.+)\.jsx$/);
+      if (componente && ['HomeSidebar', 'DesktopTitlebar'].includes(componente[1])) return null;
       return componente ? `\0componente-test-stub:${componente[1]}` : null;
     },
     load(id) {
@@ -113,7 +114,7 @@ function respostaAdiada() {
   return { promise, resolve, reject };
 }
 
-function prepararAplicacao({ comSessao = true, busca = '' } = {}) {
+function prepararAplicacao({ comSessao = true, busca = '?view=salas' } = {}) {
   const fila = new Map();
   const sessao = JSON.stringify({
     token: 'token-teste',
@@ -173,13 +174,13 @@ function textoDaArvore() {
     .join(' ');
 }
 
-test('abre o lobby de salas enquanto carrega dados auxiliares da sessão', async () => {
+test('abre o lobby solicitado com navegação enquanto carrega dados auxiliares da sessão', async () => {
   prepararAplicacao();
   await renderizar();
 
   assert.ok(chamadasFetch.includes('/api/servidores'));
   assert.equal(raiz.root.findByProps({ 'data-room-lobby': 'true' }).props['data-room-user'], 'Jogador');
-  assert.equal(raiz.root.findAllByType('nav').length, 0);
+  assert.ok(raiz.root.findAllByType('nav').length >= 1);
 });
 
 test('mantém o lobby acessível se a lista antiga de servidores falhar', async () => {
@@ -187,7 +188,7 @@ test('mantém o lobby acessível se a lista antiga de servidores falhar', async 
   await renderizar();
   await act(async () => api.rejeitar('/api/servidores', 503, 'Servidor indisponível'));
   assert.equal(raiz.root.findAllByProps({ 'data-room-lobby': 'true' }).length, 1);
-  assert.equal(raiz.root.findAllByType('nav').length, 0);
+  assert.ok(raiz.root.findAllByType('nav').length >= 1);
 });
 
 test('abre uma sala por link no navegador sem exigir uma sessão', async () => {
@@ -224,6 +225,7 @@ test('sessão salva é descartada quando a API de servidores retorna 401', async
   const api = prepararAplicacao();
   await renderizar();
   await act(async () => api.rejeitar('/api/servidores', 401, 'Sessão expirada'));
-  assert.equal(raiz.root.findAllByProps({ 'data-room-lobby': 'true' }).length, 1);
-  assert.ok(raiz.root.findAllByType('nav').length === 0);
+  assert.equal(raiz.root.findAllByProps({ 'data-room-lobby': 'true' }).length, 0);
+  assert.equal(raiz.root.findAllByProps({ 'aria-label': 'Entrar na conta' }).length, 1);
+  assert.ok(raiz.root.findAllByType('nav').length >= 1);
 });

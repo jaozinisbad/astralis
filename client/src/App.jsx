@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-import packageJson from '../package.json';
 import ServerSidebar from './components/ServerSidebar.jsx';
 import ChannelSidebar from './components/ChannelSidebar.jsx';
 import ChatArea from './components/ChatArea.jsx';
 import VoiceChannel from './components/VoiceChannel.jsx';
+import VoiceChannelEntry from './components/VoiceChannelEntry.jsx';
 import LoginScreen from './components/LoginScreen.jsx';
 import AddServerModal from './components/AddServerModal.jsx';
 import ProfileModal from './components/ProfileModal.jsx';
@@ -21,10 +21,16 @@ import UpdateBanner from './components/UpdateBanner.jsx';
 import { SERVER_URL, apiFetch } from './api.js';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from './screenCapture.mjs';
 import { emitirSolicitacaoSala } from './roomSocket.mjs';
+import HomeSidebar, { WorkspaceIcon } from './components/HomeSidebar.jsx';
+import DesktopTitlebar from './components/DesktopTitlebar.jsx';
+import { applyInterfacePreferences, useInterfacePreferences } from './interfacePreferences.mjs';
 
 export default function App() {
+  const [interfacePreferences] = useInterfacePreferences();
+  useEffect(() => { applyInterfacePreferences(interfacePreferences); }, [interfacePreferences]);
   return (
     <div className="app-shell">
+      <DesktopTitlebar />
       <UpdateBanner />
       <div className="app-shell__content"><AppContent /></div>
     </div>
@@ -39,6 +45,8 @@ function AppContent() {
   const [status, setStatus] = useState('conectando...');
   const [socket, setSocket] = useState(null);
   const [guestLoginOpen, setGuestLoginOpen] = useState(false);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [membrosVisiveis, setMembrosVisiveis] = useState(true);
   const [activeRoom, setActiveRoom] = useState(() => {
     const params = new URLSearchParams(globalThis.window?.location?.search || '');
     const roomId = params.get('room');
@@ -77,6 +85,7 @@ function AppContent() {
   const [cargosServidor, setCargosServidor] = useState([]);
   const [canalAtivo, setCanalAtivo] = useState(null);
   const [canalDeVoz, setCanalDeVoz] = useState(null);
+  const canalRetornoRef = useRef(null);
   const [vozEstado, setVozEstado] = useState({
     participantes: [],
     micMudo: false,
@@ -92,14 +101,37 @@ function AppContent() {
   const [modalAberto, setModalAberto] = useState(false);
   const [perfilAberto, setPerfilAberto] = useState(false);
   const [settingsAberto, setSettingsAberto] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState('account');
   const [servidorConfiguracaoAberto, setServidorConfiguracaoAberto] = useState(false);
   const [criacaoCanal, setCriacaoCanal] = useState(null);
   const [pickerTelaAberto, setPickerTelaAberto] = useState(false);
+  const [pickerContexto, setPickerContexto] = useState('call');
 
   // view: 'servidor' | 'amigos' | 'dm'
-  const [view, setView] = useState('salas');
+  const [view, setView] = useState(() => activeRoom
+    || new URLSearchParams(globalThis.window?.location?.search || '').get('view') === 'salas'
+    ? 'salas' : 'amigos');
   const [amigos, setAmigos] = useState([]);
   const [dmAtiva, setDmAtiva] = useState(null); // amigo com quem está conversando
+
+  useEffect(() => {
+    const settings = () => setSettingsAberto(true);
+    const keyboard = (event) => {
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); settings(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (activeRoom) fecharSala();
+        setView('amigos');
+        setMobileNavigationOpen(true);
+        setTimeout(() => window.dispatchEvent(new Event('astralis:focus-search')), 0);
+      }
+      if (event.key === 'Escape') setMobileNavigationOpen(false);
+    };
+    window.addEventListener('astralis:open-settings', settings);
+    window.addEventListener('keydown', keyboard);
+    return () => { window.removeEventListener('astralis:open-settings', settings); window.removeEventListener('keydown', keyboard); };
+  }, [activeRoom]);
 
   // Quem está em cada canal de voz, de TODOS os servidores já vistos —
   // canalId -> [{socketId, nome, avatarCor, avatarUrl}]. Isso alimenta a
@@ -239,7 +271,9 @@ function AppContent() {
       .then((lista) => {
         if (!ativo) return;
         setCanais(lista);
-        setCanalAtivo(lista[0] || null);
+        const retorno = canalRetornoRef.current;
+        setCanalAtivo(lista.find((canal) => canal.id === retorno?.id) || lista.find((canal) => canal.tipo === 'texto') || lista[0] || null);
+        canalRetornoRef.current = null;
       })
       .catch((erro) => {
         if (!ativo) return;
@@ -267,10 +301,11 @@ function AppContent() {
     setErroServidores('');
     setSessao(novaSessao);
     setGuestLoginOpen(false);
-    setView('salas');
+    setView(activeRoom ? 'salas' : 'amigos');
   }
 
   function sair() {
+    fecharSala();
     desconectarVoz();
     localStorage.removeItem('sessao');
     setSocket((atual) => {
@@ -293,7 +328,9 @@ function AppContent() {
     setModalAberto(false);
     setAmigos([]);
     setDmAtiva(null);
-    setView('salas');
+    setGuestLoginOpen(false);
+    setMobileNavigationOpen(false);
+    setView('amigos');
   }
 
   async function criarServidor(nome) {
@@ -405,8 +442,9 @@ function AppContent() {
 
   function selecionarCanal(canal) {
     fecharVisualizacaoTransmissao();
+    setMobileNavigationOpen(false);
     setCanalAtivo(canal);
-    if (canal.tipo === 'voz') setCanalDeVoz(canal);
+    if (canal.tipo === 'voz') setCanalDeVoz({ ...canal, servidorId: servidorAtivoId, servidorNome: servidores.find((item) => item.id === servidorAtivoId)?.nome });
   }
 
   function fecharVisualizacaoTransmissao() {
@@ -416,20 +454,47 @@ function AppContent() {
 
   function desconectarVoz() {
     fecharVisualizacaoTransmissao();
+    if (pickerContexto === 'call') setPickerTelaAberto(false);
     setCanalDeVoz(null);
     setVozEstado((atual) => ({ ...atual, telasAtivas: [], compartilhandoTela: false }));
+  }
+
+  function abrirChamada() {
+    if (!canalDeVoz) return;
+    if (activeRoom) fecharSala();
+    if (servidorAtivoId !== canalDeVoz.servidorId) {
+      canalRetornoRef.current = canalDeVoz;
+      setServidorAtivoId(canalDeVoz.servidorId);
+    }
+    setCanalAtivo(canalDeVoz);
+    setMobileNavigationOpen(false);
+    setView('servidor');
+  }
+
+  function abrirSeletorDaChamada() {
+    if (!canalDeVoz) return;
+    abrirChamada();
+    setPickerContexto('call');
+    setPickerTelaAberto(true);
+  }
+
+  function abrirSeletorDaSala() {
+    setPickerContexto('room');
+    setPickerTelaAberto(true);
   }
 
   const vozAcoes = {
     onAlternarMic: () => voiceChannelRef.current?.alternarMudo(),
     onAlternarAudio: () => voiceChannelRef.current?.alternarAudio(),
-    onIniciarTela: () => setPickerTelaAberto(true),
+    onIniciarTela: abrirSeletorDaChamada,
+    onTrocarFonte: abrirSeletorDaChamada,
+    onAbrirChamada: abrirChamada,
     onPararTela: () => voiceChannelRef.current?.pararCompartilhamento(),
     onDesconectar: desconectarVoz,
   };
 
   function handleCompartilharTela(config) {
-    if (activeRoom) {
+    if (pickerContexto === 'room' && activeRoom) {
       controladorCapturaRef.current?.abort();
       const controller = new AbortController();
       controladorCapturaRef.current = controller;
@@ -470,7 +535,12 @@ function AppContent() {
       iniciar();
       return;
     }
-    voiceChannelRef.current?.iniciarCompartilhamento(config);
+    if (!canalDeVoz || !voiceChannelRef.current) {
+      if (config?.stream) stopScreenCapture(config.stream).catch(() => {});
+      setPickerTelaAberto(false);
+      return;
+    }
+    voiceChannelRef.current.iniciarCompartilhamento(config);
     setPickerTelaAberto(false);
   }
 
@@ -482,6 +552,7 @@ function AppContent() {
   }
 
   async function abrirSala({ roomId, accessCode = '' }) {
+    setView('salas');
     if (!roomId) {
       const codigo = typeof accessCode === 'string' ? accessCode.trim().toUpperCase() : '';
       if (!codigo) return { ok: false, error: 'Informe o código de acesso.' };
@@ -519,6 +590,7 @@ function AppContent() {
     }
     const resposta = await emitirSolicitacaoSala(socket, 'salas:criar', dados);
     if (!resposta?.ok) return resposta;
+    setView('salas');
     setActiveRoom({
       ...resposta.room,
       roomId: resposta.room.id,
@@ -561,123 +633,67 @@ function AppContent() {
   }
 
   function selecionarServidor(id) {
+    if (activeRoom) fecharSala();
     fecharVisualizacaoTransmissao();
+    setMobileNavigationOpen(false);
     setServidorAtivoId(id);
     setView('servidor');
   }
 
   function abrirAmigos() {
+    if (activeRoom) fecharSala();
     fecharVisualizacaoTransmissao();
+    setMobileNavigationOpen(false);
     setView('amigos');
   }
 
   function abrirDM(amigo) {
+    if (!sessao) { setGuestLoginOpen(true); return; }
+    if (activeRoom) fecharSala();
     fecharVisualizacaoTransmissao();
+    setMobileNavigationOpen(false);
     setDmAtiva(amigo);
     setView('dm');
   }
 
-  if (!sessao && guestLoginOpen) {
-    return (
-      <div className="rooms-login-page">
-        <button type="button" className="rooms-back-button" onClick={() => setGuestLoginOpen(false)}>← Voltar às salas</button>
-        <LoginScreen onAutenticado={autenticar} />
-      </div>
-    );
-  }
-
-  if (!sessao) {
-    return (
-      <div className="app app--screen-rooms">
-        {activeRoom ? (
-          <>
-            <StreamRoom
-              socket={socket}
-              roomId={activeRoom.roomId}
-              role="viewer"
-              room={activeRoom}
-              accessCode={activeRoom.accessCode}
-              joinedInitially={activeRoom.joinedInitially}
-              localStream={screenStream}
-              quality={screenQuality || undefined}
-              onRequestShare={() => setPickerTelaAberto(true)}
-              onStopShare={pararCompartilhamentoDaSala}
-              onOpenSettings={() => setPickerTelaAberto(true)}
-              onExit={fecharSala}
-            />
-            {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
-          </>
-        ) : (
-          <RoomLobby
-            socket={socket}
-            usuario={null}
-            onEntrarNaConta={() => setGuestLoginOpen(true)}
-            onCriar={() => { setGuestLoginOpen(true); return Promise.resolve({ ok: false, error: 'Entre para criar uma sala.' }); }}
-            onEntrar={abrirSala}
-            onAbrirPerfil={() => setGuestLoginOpen(true)}
-          />
-        )}
-        {activeRoom && pickerTelaAberto && (
-          <ScreenShareSourcePicker onFechar={fecharSeletorTela} onSelecionar={handleCompartilharTela} />
-        )}
-      </div>
-    );
-  }
-
   const servidorAtivo = servidores.find((s) => s.id === servidorAtivoId);
   const aguardandoCanais = canaisCarregando || (servidorAtivo && canaisServidorId !== servidorAtivoId);
-  const usuarioLogado = {
+  const usuarioLogado = sessao ? {
+    id: sessao.usuario.id,
     nome: sessao.usuario.nome,
     status: sessao.usuario.status,
     avatarCor: sessao.usuario.avatar_cor,
     avatarUrl: sessao.usuario.avatar_url,
     banner_url: sessao.usuario.banner_url,
     online: true,
-  };
+  } : null;
 
-  if (view === 'salas') {
-    return (
-      <div className="app app--screen-rooms">
-        {activeRoom ? (
-          <>
-            <StreamRoom
-              socket={socket}
-              roomId={activeRoom.roomId}
-              role={activeRoom.role}
-              room={activeRoom}
-              accessCode={activeRoom.accessCode}
-              joinedInitially={activeRoom.joinedInitially}
-              localStream={screenStream}
-              quality={screenQuality || undefined}
-              onRequestShare={() => setPickerTelaAberto(true)}
-              onStopShare={pararCompartilhamentoDaSala}
-              onOpenSettings={() => setPickerTelaAberto(true)}
-              onExit={fecharSala}
-            />
-            {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
-          </>
-        ) : (
-          <RoomLobby
-            socket={socket}
-            usuario={usuarioLogado}
-            onCriar={criarSala}
-            onEntrar={abrirSala}
-            onAbrirPerfil={() => setPerfilAberto(true)}
-          />
-        )}
-        {perfilAberto && <ProfileModal usuario={sessao.usuario} onFechar={() => setPerfilAberto(false)} onSalvar={salvarPerfil} />}
-        {pickerTelaAberto && (
-          <ScreenShareSourcePicker onFechar={fecharSeletorTela} onSelecionar={handleCompartilharTela} />
-        )}
-      </div>
-    );
+  useEffect(() => {
+    const title = view === 'servidor' ? servidorAtivo?.nome || 'Servidores'
+      : view === 'dm' ? dmAtiva?.nome || 'Mensagens diretas'
+        : view === 'amigos' ? 'Amigos' : 'Salas de tela';
+    window.dispatchEvent(new CustomEvent('astralis:navigation', { detail: title }));
+  }, [view, servidorAtivo?.nome, dmAtiva?.nome]);
+
+  function abrirSalas() {
+    fecharVisualizacaoTransmissao();
+    setView('salas');
+    setMobileNavigationOpen(false);
+  }
+  function abrirCriacaoServidor() {
+    if (!sessao) { setGuestLoginOpen(true); return; }
+    setModalAberto(true);
+  }
+  function abrirMeuPerfil() {
+    if (!sessao) { setGuestLoginOpen(true); return; }
+    setPerfilAberto(true);
   }
 
   // Junta as permissões de todos os cargos que o usuário logado tem
   // nesse servidor (o dono não precisa disso — sempre pode tudo).
-  const meuMembro = membrosServidor.find((m) => m.id === sessao.usuario.id);
+  const meuMembro = membrosServidor.find((m) => m.id === sessao?.usuario.id);
   const minhasPermissoes = {};
-  meuMembro?.cargos.forEach((c) => {
+  meuMembro?.cargos?.forEach((c) => {
     const cargoCompleto = cargosServidor.find((cc) => cc.id === c.id);
     if (cargoCompleto?.permissoes) {
       Object.entries(cargoCompleto.permissoes).forEach(([chave, valor]) => {
@@ -687,19 +703,43 @@ function AppContent() {
   });
 
   return (
-    <>
+    <div className="astralis-workspace" data-mobile-panel={mobileNavigationOpen ? 'navigation' : undefined}>
+      <div className="mobile-nav"><button type="button" aria-label="Abrir navegação" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen((open) => !open)}><WorkspaceIcon name="menu"/></button><strong>{view === 'servidor' ? servidorAtivo?.nome || 'Servidores' : view === 'dm' ? dmAtiva?.nome : view === 'amigos' ? 'Amigos' : 'Salas de tela'}</strong><button type="button" aria-label="Configurações de usuário" onClick={() => setSettingsAberto(true)}><WorkspaceIcon name="settings"/></button></div>
       <div className={`app${vozEstado.telaSelecionadaId ? ' app--transmissao-aberta' : ''}`}>
+      {mobileNavigationOpen && <button type="button" className="workspace-mobile-backdrop" aria-label="Fechar navegação" onClick={() => setMobileNavigationOpen(false)}/>}
       <ServerSidebar
         servidores={servidores}
         servidorAtivoId={servidorAtivoId}
-        viewAtiva={view === 'amigos' || view === 'dm' ? 'amigos' : 'servidor'}
+        viewAtiva={view === 'dm' ? 'amigos' : view}
         onSelecionar={selecionarServidor}
         onAbrirAmigos={abrirAmigos}
-        onAbrirModal={() => setModalAberto(true)}
+        onAbrirSalas={view === 'salas' ? abrirSalas : undefined}
+        onAbrirModal={abrirCriacaoServidor}
       />
 
-      {view === 'servidor' && !servidoresCarregando && !erroServidores && !aguardandoCanais && !erroCanais && servidorAtivo && canalAtivo && (
-        <>
+      {(view !== 'servidor' || !servidorAtivo) && <HomeSidebar
+        view={view} amigos={amigos} servidores={servidores} canais={canais}
+        dmAtiva={dmAtiva} usuario={usuarioLogado} onAmigos={abrirAmigos} onSalas={abrirSalas}
+        onDM={abrirDM} onServidor={selecionarServidor} onCanal={(channel) => { if (activeRoom) fecharSala(); setView('servidor'); selecionarCanal(channel); setMobileNavigationOpen(false); }}
+        onPerfil={abrirMeuPerfil} onSettings={() => setSettingsAberto(true)}
+        voice={vozEstado} voiceChannel={canalDeVoz} voiceActions={canalDeVoz ? vozAcoes : null} connected={status === 'conectado ao servidor'}
+      />}
+
+      {view === 'salas' && <section className="workspace-rooms" aria-label="Salas de tela">
+        {activeRoom ? <StreamRoom
+          socket={socket} roomId={activeRoom.roomId} role={activeRoom.role}
+          room={activeRoom} accessCode={activeRoom.accessCode} joinedInitially={activeRoom.joinedInitially}
+          localStream={screenStream} quality={screenQuality || undefined}
+          onRequestShare={abrirSeletorDaSala} onStopShare={pararCompartilhamentoDaSala}
+          onOpenSettings={abrirSeletorDaSala} onExit={fecharSala}
+        /> : <RoomLobby socket={socket} usuario={usuarioLogado}
+          onCriar={criarSala} onEntrar={abrirSala} onAbrirPerfil={abrirMeuPerfil}
+          onEntrarNaConta={!sessao ? () => setGuestLoginOpen(true) : undefined}
+        />}
+        {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
+      </section>}
+
+      {view === 'servidor' && servidorAtivo && sessao && (
           <ChannelSidebar
             servidorNome={servidorAtivo.nome}
             codigoConvite={servidorAtivo.codigo_convite}
@@ -707,8 +747,8 @@ function AppContent() {
             onExcluirServidor={() => excluirServidor(servidorAtivo.id)}
             onSairDoServidor={() => sairDoServidor(servidorAtivo.id)}
             minhasPermissoes={minhasPermissoes}
-            canais={canais}
-            canalAtivoId={canalAtivo.id}
+            canais={canaisServidorId === servidorAtivoId ? canais : []}
+            canalAtivoId={canalAtivo?.id}
             onSelecionar={selecionarCanal}
             usuario={usuarioLogado}
             onSair={sair}
@@ -723,8 +763,11 @@ function AppContent() {
             onCriarCanal={(tipo) => setCriacaoCanal({ tipo, servidorId: servidorAtivoId })}
             onApagarCanal={apagarCanal}
             onExpulsarDaCall={expulsarDaCall}
-            onAssistirTransmissao={(socketId) => voiceChannelRef.current?.alternarTransmissao(socketId)}
+            onAssistirTransmissao={(socketId) => { abrirChamada(); voiceChannelRef.current?.alternarTransmissao(socketId); }}
           />
+      )}
+      {view === 'servidor' && !servidoresCarregando && !erroServidores && !aguardandoCanais && !erroCanais && servidorAtivo && canalAtivo?.tipo === 'texto' && sessao && (
+        <>
           <ChatArea
             canal={canalAtivo}
             statusConexao={status}
@@ -733,9 +776,14 @@ function AppContent() {
             nomeUsuario={sessao.usuario.nome}
             meuUsuarioId={sessao.usuario.id}
             podeApagarMensagens={servidorAtivo.papel === 'dono' || !!minhasPermissoes.gerenciar_mensagens}
+            membrosVisiveis={membrosVisiveis} onToggleMembros={() => setMembrosVisiveis((visible) => !visible)}
           />
-          <MemberSidebar membros={membrosServidor} />
+          {membrosVisiveis && <MemberSidebar membros={membrosServidor} />}
         </>
+      )}
+
+      {view === 'servidor' && !aguardandoCanais && !erroCanais && canalAtivo?.tipo === 'voz' && canalDeVoz?.id !== canalAtivo.id && sessao && (
+        <VoiceChannelEntry canal={canalAtivo} participantes={presencaVoz[canalAtivo.id] || []} onEntrar={() => selecionarCanal(canalAtivo)} />
       )}
 
       {view === 'servidor' && servidoresCarregando && (
@@ -816,31 +864,36 @@ function AppContent() {
         </div>
       )}
 
-      {view === 'amigos' && <FriendsScreen amigos={amigos} onAbrirDM={abrirDM} />}
+      {view === 'amigos' && <FriendsScreen amigos={amigos} onAbrirDM={abrirDM} onAdicionarAmigos={abrirCriacaoServidor} onEntrarNaConta={!sessao ? () => setGuestLoginOpen(true) : undefined} />}
 
-      {view === 'dm' && dmAtiva && (
-        <DirectMessageScreen amigo={dmAtiva} socket={socket} token={sessao.token} meuId={sessao.usuario.id} />
+      {view === 'dm' && dmAtiva && sessao && (
+        <DirectMessageScreen amigo={dmAtiva} socket={socket} token={sessao.token} meuId={sessao.usuario.id} meuUsuario={sessao.usuario} />
       )}
 
-      {canalDeVoz && (
+      {canalDeVoz && sessao && (
         <VoiceChannel
+          key={canalDeVoz.id}
           ref={voiceChannelRef}
           canal={canalDeVoz}
           socket={socket}
           nomeUsuario={sessao.usuario.nome}
+          usuario={usuarioLogado}
+          visible={view === 'servidor' && canalAtivo?.id === canalDeVoz.id}
+          onCompartilharTela={abrirSeletorDaChamada}
+          onAbrirConfiguracoes={() => { setSettingsInitialSection('voice'); setSettingsAberto(true); }}
           onDesconectar={desconectarVoz}
           onEstadoChange={setVozEstado}
         />
       )}
 
-      {modalAberto && (
+      {modalAberto && sessao && (
         <AddServerModal
           onFechar={() => setModalAberto(false)}
           onCriar={criarServidor}
           onEntrar={entrarComCodigo}
         />
       )}
-      {perfilAberto && (
+      {perfilAberto && sessao && (
         <ProfileModal
           usuario={sessao.usuario}
           onFechar={() => setPerfilAberto(false)}
@@ -850,7 +903,11 @@ function AppContent() {
 
       {settingsAberto && (
         <SettingsModal
-          onFechar={() => setSettingsAberto(false)}
+          initialSection={settingsInitialSection}
+          usuario={sessao?.usuario}
+          onAbrirPerfil={() => { setSettingsAberto(false); setSettingsInitialSection('account'); abrirMeuPerfil(); }}
+          onSair={sessao ? sair : undefined}
+          onFechar={() => { setSettingsAberto(false); setSettingsInitialSection('account'); }}
           onSalvarConfiguracao={(config) => {
             // Configuração já foi salva em localStorage no componente
             voiceChannelRef.current?.aplicarConfiguracao(config);
@@ -882,12 +939,17 @@ function AppContent() {
 
       {pickerTelaAberto && (
         <ScreenShareSourcePicker
+          contexto={pickerContexto}
+          canalNome={pickerContexto === 'call' ? canalDeVoz?.nome : activeRoom?.name}
           onFechar={fecharSeletorTela}
           onSelecionar={handleCompartilharTela}
         />
       )}
+      {!sessao && guestLoginOpen && <div className="workspace-login" role="dialog" aria-modal="true" aria-label="Entrar no Astralis">
+        <button type="button" className="workspace-login__close" onClick={() => setGuestLoginOpen(false)} aria-label="Fechar login">×</button>
+        <LoginScreen onAutenticado={autenticar}/>
+      </div>}
       </div>
-      <div className="versao-watermark">v{packageJson.version}</div>
-    </>
+    </div>
   );
 }

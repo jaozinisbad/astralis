@@ -45,9 +45,10 @@ function criarRestricoesVideoDeJanela(settings) {
     mandatory: {
       chromeMediaSource: 'desktop',
       chromeMediaSourceId: settings.fonteId,
-      minWidth: largura,
+      // Equal minimum/maximum dimensions select Chromium's FIXED_RESOLUTION
+      // policy, padding small or portrait windows into a 16:9 frame. Keep only
+      // ceilings so capture can follow the source size and aspect ratio.
       maxWidth: largura,
-      minHeight: altura,
       maxHeight: altura,
       minFrameRate: fps,
       maxFrameRate: fps,

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
+import { useDialogFocus } from '../useDialogFocus.mjs';
 
 const CORES_AVATAR = ['#f06449', '#e0a458', '#43aa8b', '#4d96ff', '#7b61ff', '#e85d9e'];
 
@@ -13,6 +14,7 @@ export default function ProfileModal({ usuario, onFechar, onSalvar }) {
   const [salvando, setSalvando] = useState(false);
   const inputFotoRef = useRef(null);
   const inputBannerRef = useRef(null);
+  const dialogRef = useDialogFocus(onFechar, { initialFocus: '[data-profile-name]' });
 
   async function comprimirFoto(arquivo) {
     return new Promise((resolve, reject) => {
@@ -142,11 +144,11 @@ export default function ProfileModal({ usuario, onFechar, onSalvar }) {
 
   return (
     <div className="modal-overlay" onClick={onFechar}>
-      <form className="modal profile-modal" onClick={(event) => event.stopPropagation()} onSubmit={salvar}>
+      <form className="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="astralis-profile-title" ref={dialogRef} tabIndex={-1} onClick={(event) => event.stopPropagation()} onSubmit={salvar}>
         <div className="profile-modal__heading">
           <div>
             <span className="eyebrow">Perfil principal</span>
-            <h2>Personalize seu perfil</h2>
+            <h2 id="astralis-profile-title">Personalize seu perfil</h2>
           </div>
           <div className="profile-modal__preview">
             <div className="profile-banner-preview" style={bannerUrl ? { backgroundImage: `url(${bannerUrl})` } : undefined} />
@@ -167,7 +169,7 @@ export default function ProfileModal({ usuario, onFechar, onSalvar }) {
 
         <label className="profile-field">
           Nome exibido
-          <input className="modal-input" maxLength="32" value={nome} onChange={(event) => setNome(event.target.value)} autoFocus />
+          <input className="modal-input" data-profile-name maxLength="32" value={nome} onChange={(event) => setNome(event.target.value)} autoFocus />
         </label>
 
         <label className="profile-field">
@@ -214,13 +216,14 @@ export default function ProfileModal({ usuario, onFechar, onSalvar }) {
                 className={`profile-color${avatarCor === cor ? ' selected' : ''}`}
                 style={{ background: cor }}
                 aria-label={`Selecionar cor ${cor}`}
+                aria-pressed={avatarCor === cor}
                 onClick={() => setAvatarCor(cor)}
               />
             ))}
           </div>
         </div>
 
-        {erro && <div className="modal-erro">{erro}</div>}
+        {erro && <div className="modal-erro" role="alert">{erro}</div>}
         <div className="modal-acoes">
           <button type="button" onClick={onFechar} className="modal-botao-secundario">
             Cancelar

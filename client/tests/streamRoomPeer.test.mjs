@@ -91,6 +91,86 @@ const flushPeerTasks = () => new Promise((resolve) => setImmediate(resolve));
 const noOpTimeout = () => 0;
 const noOpClearTimeout = () => {};
 
+test('stream peer: default and partial quality settings agree with adaptive allocation and diagnostics', async () => {
+  const snapshots = [];
+  const host = createStreamRoomPeerSession({
+    socket: new FakeSocket(), roomId: 'defaults-room', role: 'host', iceServers: [],
+    RTCPeerConnectionImpl: FakePeerConnection, onStats: (snapshot) => snapshots.push(snapshot),
+  });
+  host.setLocalStream(makeStream());
+  await host.setViewers(['viewer-a']);
+  assert.equal(snapshots.at(-1).adaptiveQuality, true);
+  assert.equal(snapshots.at(-1).videoBudget, 16_000_000);
+  await host.setQuality({ resolution: '720p', adaptiveQuality: false });
+  assert.equal(snapshots.at(-1).adaptiveQuality, false);
+  await host.setQuality({ resolution: '1080p' });
+  assert.equal(snapshots.at(-1).adaptiveQuality, true);
+  assert.equal(snapshots.at(-1).videoBudget, 16_000_000);
+  host.close();
+});
+
+test('stream peer: configures efficient codec before offer and shares capability queries across viewers', async () => {
+  FakePeerConnection.instances = [];
+  const order = [];
+  const video = { kind: 'video', id: 'shared-video' };
+  const preferred = [{ mimeType: 'video/H264' }, { mimeType: 'video/VP8' }];
+  class CodecPeer extends FakePeerConnection {
+    getTransceivers() {
+      return this.senders.map((sender) => ({ sender, setCodecPreferences(codecs) {
+        assert.strictEqual(codecs, preferred);
+        order.push('codecs');
+      } }));
+    }
+    async createOffer() { order.push('offer'); return super.createOffer(); }
+  }
+  let queries = 0;
+  const host = createStreamRoomPeerSession({
+    socket: new FakeSocket(), roomId: 'codec-room', role: 'host', iceServers: [],
+    RTCPeerConnectionImpl: CodecPeer,
+    resolveVideoCodecPreferencesImpl: async ({ track }) => { queries += 1; assert.strictEqual(track, video); return preferred; },
+  });
+  host.setLocalStream({ getTracks: () => [video] });
+  await host.setViewers(['viewer-a', 'viewer-b']);
+  assert.equal(queries, 1);
+  assert.equal(order.filter((item) => item === 'codecs').length, 2);
+  assert.equal(order.filter((item) => item === 'offer').length, 2);
+  assert.ok(order.indexOf('codecs') < order.indexOf('offer'));
+  host.close();
+});
+
+test('stream peer: failed codec preference remains optional and a closed peer cannot send a late offer', async () => {
+  FakePeerConnection.instances = [];
+  class UnsupportedCodecPeer extends FakePeerConnection {
+    getTransceivers() {
+      return this.senders.map((sender) => ({ sender, setCodecPreferences() { throw new Error('unsupported'); } }));
+    }
+  }
+  let complete;
+  const host = createStreamRoomPeerSession({
+    socket: new FakeSocket(), roomId: 'codec-room', role: 'host', iceServers: [],
+    RTCPeerConnectionImpl: UnsupportedCodecPeer,
+    resolveVideoCodecPreferencesImpl: () => new Promise((resolve) => { complete = resolve; }),
+  });
+  const video = { kind: 'video' };
+  host.setLocalStream({ getTracks: () => [video] });
+  const connecting = host.setViewers(['viewer-a']);
+  await flushPeerTasks();
+  host.close();
+  complete([{ mimeType: 'video/H264' }]);
+  await connecting;
+  assert.equal(FakePeerConnection.instances[0].offerCalls, 0);
+
+  const fallback = createStreamRoomPeerSession({
+    socket: new FakeSocket(), roomId: 'codec-room', role: 'host', iceServers: [],
+    RTCPeerConnectionImpl: UnsupportedCodecPeer,
+    resolveVideoCodecPreferencesImpl: async () => [{ mimeType: 'video/H264' }],
+  });
+  fallback.setLocalStream({ getTracks: () => [video] });
+  await fallback.setViewers(['viewer-b']);
+  assert.equal(FakePeerConnection.instances[1].offerCalls, 1);
+  fallback.close();
+});
+
 test('stream peer: two viewer sessions on one socket keep offers, ICE, and remote streams separate', async () => {
   FakePeerConnection.instances = [];
   const socket = new FakeSocket();
@@ -760,12 +840,12 @@ test('stream peer: WebRTC stats publish measured media metrics and reallocate th
       return new Map((this.statsReports || []).map((report) => [report.id, report]));
     }
   }
-  const statsFor = (peerId, availableOutgoingBitrate, reason = 'none') => [
+  const statsFor = (peerId, availableOutgoingBitrate, reason = 'none', timestamp = 1_000) => [
     {
       id: `outbound-${peerId}`,
       type: 'outbound-rtp',
       kind: 'video',
-      timestamp: 1_000,
+      timestamp,
       bytesSent: 20_000,
       framesEncoded: 30,
       frameWidth: 1280,
@@ -779,7 +859,7 @@ test('stream peer: WebRTC stats publish measured media metrics and reallocate th
       type: 'candidate-pair',
       state: 'succeeded',
       selected: true,
-      currentRoundTripTime: 0.07,
+      currentRoundTripTime: peerId === 'weak' ? 0.3 : 0.07,
       availableOutgoingBitrate,
     },
   ];
@@ -808,13 +888,15 @@ test('stream peer: WebRTC stats publish measured media metrics and reallocate th
   strong.statsReports = statsFor('strong', 8_000_000, 'bandwidth');
 
   await session.refreshStats();
+  weak.statsReports = statsFor('weak', 1_000_000, 'bandwidth', 2_000);
+  strong.statsReports = statsFor('strong', 8_000_000, 'bandwidth', 2_000);
   await session.refreshStats();
 
   assert.equal(typeof scheduledStats, 'function');
   assert.equal(diagnostics.role, 'host');
   assert.equal(diagnostics.videoBudget, 4_000_000);
   assert.equal(diagnostics.peers.find((peer) => peer.peerId === 'viewer-weak').metrics.frameWidth, 1280);
-  assert.equal(diagnostics.peers.find((peer) => peer.peerId === 'viewer-weak').metrics.roundTripTimeSeconds, 0.07);
+  assert.equal(diagnostics.peers.find((peer) => peer.peerId === 'viewer-weak').metrics.roundTripTimeSeconds, 0.3);
   assert.equal(diagnostics.peers.find((peer) => peer.peerId === 'viewer-weak').targetVideoBitrate, 850_000);
   assert.equal(diagnostics.peers.find((peer) => peer.peerId === 'viewer-strong').targetVideoBitrate, 3_150_000);
   assert.ok(diagnostics.peers.reduce((sum, peer) => sum + peer.targetVideoBitrate, 0) <= diagnostics.videoBudget);
@@ -864,7 +946,7 @@ test('stream peer: reduces only after two stable bandwidth-limited estimates', a
   const reports = (timestamp) => [
     { id: 'outbound', type: 'outbound-rtp', kind: 'video', timestamp, bytesSent: timestamp * 100, framesEncoded: timestamp, frameWidth: 1280, frameHeight: 720, qualityLimitationReason: 'bandwidth', transportId: 'transport' },
     { id: 'transport', type: 'transport', selectedCandidatePairId: 'pair' },
-    { id: 'pair', type: 'candidate-pair', state: 'succeeded', selected: true, currentRoundTripTime: 0.08, availableOutgoingBitrate: 500_000 },
+    { id: 'pair', type: 'candidate-pair', state: 'succeeded', selected: true, currentRoundTripTime: 0.3, availableOutgoingBitrate: 500_000 },
   ];
 
   FakePeerConnection.instances = [];
@@ -954,17 +1036,17 @@ test('stream peer: a failed reduction does not transfer its bitrate share to ano
       return new Map((this.statsReports || []).map((report) => [report.id, report]));
     }
   }
-  const reports = (peerId, availableOutgoingBitrate) => [
+  const reports = (peerId, availableOutgoingBitrate, timestamp = 1_000) => [
     {
       id: `outbound-${peerId}`, type: 'outbound-rtp', kind: 'video',
-      timestamp: 1_000, bytesSent: 10_000, framesEncoded: 30,
+      timestamp, bytesSent: 10_000, framesEncoded: 30,
       frameWidth: 1280, frameHeight: 720, qualityLimitationReason: 'bandwidth',
       transportId: `transport-${peerId}`,
     },
     { id: `transport-${peerId}`, type: 'transport', selectedCandidatePairId: `pair-${peerId}` },
     {
       id: `pair-${peerId}`, type: 'candidate-pair', state: 'succeeded',
-      selected: true, currentRoundTripTime: 0.08, availableOutgoingBitrate,
+      selected: true, currentRoundTripTime: 0.3, availableOutgoingBitrate,
     },
   ];
 
@@ -989,6 +1071,8 @@ test('stream peer: a failed reduction does not transfer its bitrate share to ano
   strong.statsReports = reports('strong', 8_000_000);
 
   await session.refreshStats();
+  weak.statsReports = reports('weak', 500_000, 2_000);
+  strong.statsReports = reports('strong', 8_000_000, 2_000);
   await session.refreshStats();
 
   assert.equal(weak.senders[0].params.encodings[0].maxBitrate, 2_000_000);
@@ -1003,17 +1087,17 @@ test('stream peer: accepts low bandwidth estimates and expires a missing estimat
       return new Map((this.statsReports || []).map((report) => [report.id, report]));
     }
   }
-  const reports = (peerId, availableOutgoingBitrate) => [
+  const reports = (peerId, availableOutgoingBitrate, timestamp = 1_000) => [
     {
       id: `outbound-${peerId}`, type: 'outbound-rtp', kind: 'video',
-      timestamp: 1_000, bytesSent: 10_000, framesEncoded: 30,
+      timestamp, bytesSent: 10_000, framesEncoded: 30,
       frameWidth: 1280, frameHeight: 720, qualityLimitationReason: 'bandwidth',
       transportId: `transport-${peerId}`,
     },
     { id: `transport-${peerId}`, type: 'transport', selectedCandidatePairId: `pair-${peerId}` },
     {
       id: `pair-${peerId}`, type: 'candidate-pair', state: 'succeeded',
-      selected: true, currentRoundTripTime: 0.08,
+      selected: true, currentRoundTripTime: 0.3,
       ...(availableOutgoingBitrate === undefined ? {} : { availableOutgoingBitrate }),
     },
   ];
@@ -1037,6 +1121,8 @@ test('stream peer: accepts low bandwidth estimates and expires a missing estimat
   strong.statsReports = reports('strong', 8_000_000);
 
   await session.refreshStats();
+  weak.statsReports = reports('weak', 100_000, 2_000);
+  strong.statsReports = reports('strong', 8_000_000, 2_000);
   await session.refreshStats();
   assert.equal(weak.senders[0].params.encodings[0].maxBitrate, 85_000);
   assert.equal(strong.senders[0].params.encodings[0].maxBitrate, 3_915_000);

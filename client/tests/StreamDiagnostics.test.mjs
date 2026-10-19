@@ -23,6 +23,20 @@ before(async () => {
 
 after(async () => { await vite?.close(); });
 
+test('stream diagnostics: reports observed encoder efficiency and cost without guessing hardware', () => {
+  const markup = renderToStaticMarkup(React.createElement(StreamDiagnostics, {
+    outbound: true,
+    diagnostics: { peers: [{ peerId: 'viewer-a', connectionState: 'connected', metrics: {
+      direction: 'outbound', sampledAt: Date.now(), encoderImplementation: '<driver>',
+      powerEfficientEncoder: true, encodeTimePerFrameMs: 2.5,
+    } }] },
+  }));
+  assert.match(markup, /&lt;driver&gt;/);
+  assert.match(markup, /Eficiência sinalizada<\/dt><dd>Sim/);
+  assert.match(markup, /Codificação por quadro<\/dt><dd>2,5 ms/);
+  assert.equal(markup.includes('hardware'), false);
+});
+
 test('stream diagnostics: flags old metrics when the peer is disconnected', () => {
   const markup = renderToStaticMarkup(React.createElement(StreamDiagnostics, {
     outbound: true,

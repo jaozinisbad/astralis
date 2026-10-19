@@ -2,6 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } f
 import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
 import { getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from '../screenCapture.mjs';
+import VoiceCallStage from './VoiceCallStage.jsx';
 
 // Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
 // a descobrirem como se alcançar através da internet (NAT traversal).
@@ -43,14 +44,10 @@ function preferirH264(transceiver) {
   }
 }
 
-// Esse componente não controla mais sua própria interface de
-// participantes/botões — isso agora vive na barra lateral (para ficar
-// igual ao Discord). Em vez disso, ele expõe funções via ref (mutar,
-// compartilhar tela, etc.) e avisa o componente pai sempre que o estado
-// muda, através de onEstadoChange. O que ele ainda renderiza sozinho são
-// só o vídeo que a pessoa selecionou pelo indicador "AO VIVO".
+// A mídia permanece conectada durante a navegação; visible controla o palco.
+// O painel lateral usa os mesmos controles e o mesmo estado da chamada.
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { canal, socket, nomeUsuario, onDesconectar, onEstadoChange },
+  { canal, socket, nomeUsuario, usuario, visible = false, onCompartilharTela, onAbrirConfiguracoes, onDesconectar, onEstadoChange },
   ref
 ) {
   const [participantes, setParticipantes] = useState([]); // [{socketId, nome}]
@@ -63,6 +60,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [telaSelecionadaId, setTelaSelecionadaId] = useState(null);
   const [emTelaCheia, setEmTelaCheia] = useState(false);
   const [conectando, setConectando] = useState(true);
+  const [connectionState, setConnectionState] = useState('connecting');
+  const [compartilhamentoPendente, setCompartilhamentoPendente] = useState(false);
   const [compartilhandoTela, setCompartilhandoTela] = useState(false);
   const [resolucaoTela, setResolucaoTela] = useState('1080p');
   const [fpsTela, setFpsTela] = useState('60');
@@ -157,8 +156,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       erro,
       erroCompartilhamento,
       conectando,
+      connectionState,
+      compartilhamentoPendente,
     });
-  }, [participantes, micMudo, audioMudo, compartilhandoTela, telasRemotas, telaSelecionadaId, socket, erro, erroCompartilhamento, conectando]);
+  }, [participantes, micMudo, audioMudo, compartilhandoTela, telasRemotas, telaSelecionadaId, socket, erro, erroCompartilhamento, conectando, connectionState, compartilhamentoPendente]);
 
   // Inicializa a configuração de áudio do localStorage
   useEffect(() => {
@@ -482,12 +483,25 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
 
     async function iniciar() {
+      setConectando(true);
+      setConnectionState('connecting');
+      setErro('');
       try {
         await montarPipelineDeEntrada(configuracaoAudioRef.current.microfoneId);
-        if (cancelado) return;
-        setConectando(false);
+        if (cancelado) {
+          streamLocalRef.current?.getTracks().forEach((track) => track.stop());
+          streamEnviadaRef.current?.getTracks().forEach((track) => track.stop());
+          streamLocalRef.current = null;
+          streamEnviadaRef.current = null;
+          filtroRuidoRef.current?.destruir();
+          filtroRuidoRef.current = null;
+          await contextoEntradaRef.current?.close().catch(() => {});
+          contextoEntradaRef.current = null;
+          return;
+        }
         socket.emit('entrar-canal-voz', canal.id);
       } catch (err) {
+        if (cancelado) return;
         const mensagem = err.name === 'NotFoundError'
           ? 'Nenhum microfone foi encontrado neste computador.'
           : err.name === 'NotAllowedError' || err.name === 'SecurityError'
@@ -497,10 +511,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
               : 'Não foi possível acessar o microfone. Verifique as configurações de áudio.';
         setErro(mensagem);
         setConectando(false);
+        setConnectionState('failed');
       }
     }
 
     socket.on('peers-existentes', ({ peers }) => {
+      setConectando(false);
+      setConnectionState('connected');
       setParticipantes([
         ...peers,
         { socketId: socket.id, nome: nomeUsuario },
@@ -513,7 +530,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
     socket.on('novo-peer', ({ socketId, nome, avatarCor, avatarUrl }) => {
       tocarEfeito('entrar');
-      setParticipantes((atual) => [...atual, { socketId, nome, avatarCor: avatarCor || '#5865f2', avatarUrl: avatarUrl || null }]);
+      setParticipantes((atual) => [...atual.filter((item) => item.socketId !== socketId), { socketId, nome, avatarCor: avatarCor || '#9270f4', avatarUrl: avatarUrl || null }]);
     });
 
     socket.on('webrtc-oferta', async ({ de, oferta }) => {
@@ -564,6 +581,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       removerTelaRemota(socketId);
     });
 
+    function desconectado() {
+      setConectando(false);
+      setConnectionState('disconnected');
+    }
+    function reconectado() {
+      if (!streamEnviadaRef.current || cancelado) return;
+      Object.keys(conexoesRef.current).forEach(fecharConexao);
+      setParticipantes([]);
+      setConectando(true);
+      setConnectionState('connecting');
+      socket.emit('entrar-canal-voz', canal.id);
+    }
+    socket.on('disconnect', desconectado);
+    socket.on('connect', reconectado);
+
     iniciar();
 
     return () => {
@@ -577,6 +609,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       socket.off('webrtc-candidato');
       socket.off('peer-saiu');
       socket.off('tela-parada');
+      socket.off('disconnect', desconectado);
+      socket.off('connect', reconectado);
 
       Object.keys(conexoesRef.current).forEach(fecharConexao);
       streamLocalRef.current?.getTracks().forEach((t) => t.stop());
@@ -634,6 +668,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     const controller = new AbortController();
     controladorCapturaTelaRef.current = controller;
     const pedido = ++pedidoCapturaTelaRef.current;
+    setCompartilhamentoPendente(true);
     try {
       setErroCompartilhamento('');
       avisouFalhaQualidadeRef.current = false;
@@ -666,12 +701,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         if (telaLocalRef.current === stream) pararCompartilhamento();
       };
 
+      const streamAnterior = telaLocalRef.current;
+      if (streamAnterior && streamAnterior !== stream) {
+        const tracksAnteriores = streamAnterior.getTracks();
+        Object.values(conexoesRef.current).forEach((pc) => {
+          pc.getSenders().filter((sender) => tracksAnteriores.includes(sender.track)).forEach((sender) => pc.removeTrack(sender));
+        });
+      }
       telaLocalRef.current = stream;
+      if (streamAnterior && streamAnterior !== stream) stopScreenCapture(streamAnterior).catch(() => {});
       resolucaoTelaAtualRef.current = res;
       qualidadeTelaAtualRef.current = qualidade;
       setResolucaoTela(res);
       setFpsTela(String(fps));
       setCompartilhandoTela(true);
+      if (visible && socket?.id) setTelaSelecionadaId(socket.id);
       tocarEfeito('transmitir');
 
       const alturaNativa = videoTrack.getSettings().height || dimensoes.altura;
@@ -706,11 +750,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
           ? 'Compartilhamento de tela cancelado.'
           : 'Não foi possível compartilhar a tela. Verifique as permissões do sistema.',
       );
+    } finally {
+      if (pedido === pedidoCapturaTelaRef.current) setCompartilhamentoPendente(false);
     }
   }
 
   async function pararCompartilhamento() {
     cancelarPedidoCapturaTela();
+    setCompartilhamentoPendente(false);
     const stream = telaLocalRef.current;
     if (!stream) return;
     const videoTrack = stream.getVideoTracks()[0];
@@ -868,77 +915,27 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     return () => document.removeEventListener('fullscreenchange', sincronizarTelaCheia);
   }, []);
 
-  if (!streamSelecionada) return null;
+  if (!visible && !streamSelecionada) return null;
+  const localId = socket?.id || 'local';
+  const participantesDoPalco = [...new Map([
+    ...participantes.filter((p) => p.socketId !== localId),
+    { socketId: localId, nome: nomeUsuario || usuario?.nome || 'Você', avatarCor: usuario?.avatarCor, avatarUrl: usuario?.avatarUrl },
+  ].map((p) => [p.socketId, p])).values()];
 
-  return (
-    <div className="content voice-call-panel voice-call-panel--active">
-      <div className="content__header voice-call-panel__header">
-        <span className="content__channel-symbol">◌</span>
-        <span>{canal.nome} — {telaLocalSelecionada ? 'Sua tela' : participanteSelecionado?.nome || 'Transmissão ao vivo'}</span>
-        <span className="voice-call-panel__live"><span /> AO VIVO</span>
-        <button type="button" className="voice-call-panel__close" onClick={() => setTelaSelecionadaId(null)}>
-          Fechar
-        </button>
-      </div>
-      <div className="content__body">
-        <div className="telas-compartilhadas">
-          <div className="tela-tile" key={telaSelecionadaId} ref={telaTileRef}>
-            <video
-              autoPlay
-              playsInline
-              muted
-              ref={(el) => {
-                if (el && el.srcObject !== streamSelecionada) el.srcObject = streamSelecionada;
-              }}
-            />
-            <div className="tela-tile__label">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Alguém'}</div>
-            <div className="tela-tile__controls">
-              <button
-                className="tela-tile__fullscreen"
-                onClick={abrirTelaCheia}
-                title={emTelaCheia ? 'Sair da tela cheia' : 'Abrir a transmissão em tela cheia'}
-                type="button"
-              >
-                {emTelaCheia ? 'Sair da tela cheia' : 'Tela cheia'}
-              </button>
-              {!telaLocalSelecionada && (
-                <>
-                  <label className="tela-tile__volume">
-                    <span>Volume {Math.round(volumesTelas[telaSelecionadaId] ?? 100)}%</span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="1"
-                      value={volumesTelas[telaSelecionadaId] ?? 100}
-                      aria-label={`Volume da transmissão de ${participanteSelecionado?.nome || 'Alguém'}`}
-                      onChange={(evento) => alterarVolumeTela(telaSelecionadaId, evento.target.valueAsNumber)}
-                    />
-                  </label>
-                  <button
-                    className="tela-tile__mutar"
-                    onClick={() => alternarMuteTela(telaSelecionadaId)}
-                    title={telasMutadas.has(telaSelecionadaId) ? 'Ativar o áudio dessa tela' : 'Mutar o áudio dessa tela'}
-                    type="button"
-                  >
-                    {telasMutadas.has(telaSelecionadaId) ? 'Ativar som' : 'Silenciar'}
-                  </button>
-                </>
-              )}
-              <button
-                className="tela-tile__ocultar"
-                onClick={() => setTelaSelecionadaId(null)}
-                title="Fechar a transmissão sem sair da chamada"
-                type="button"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  return <VoiceCallStage
+    canal={canal} participantes={participantesDoPalco} socketId={localId}
+    micMudo={micMudo} audioMudo={audioMudo} conectando={conectando} connectionState={connectionState}
+    erro={erro} erroCompartilhamento={erroCompartilhamento} compartilhamentoPendente={compartilhamentoPendente}
+    compartilhandoTela={compartilhandoTela} streamSelecionada={streamSelecionada}
+    telaSelecionadaId={telaSelecionadaId} telaLocalSelecionada={telaLocalSelecionada}
+    participanteSelecionado={participanteSelecionado} telasRemotas={telasRemotas}
+    telaTileRef={telaTileRef} emTelaCheia={emTelaCheia} telasMutadas={telasMutadas} volumesTelas={volumesTelas}
+    onAlternarMic={alternarMudo} onAlternarAudio={alternarAudio}
+    onCompartilharTela={onCompartilharTela} onPararCompartilhamento={pararCompartilhamento}
+    onDesconectar={onDesconectar} onAbrirConfiguracoes={onAbrirConfiguracoes}
+    onSelecionarTela={alternarTransmissao} onFecharTela={() => setTelaSelecionadaId(null)}
+    onTelaCheia={abrirTelaCheia} onMutarTela={alternarMuteTela} onVolumeTela={alterarVolumeTela}
+  />;
 });
 
 export default VoiceChannel;

@@ -59,6 +59,25 @@ function outboundReport({
   ];
 }
 
+test('outbound video: measures interval encoding cost and keeps unknown hardware explicit', () => {
+  const firstReport = outboundReport({ framesEncoded: 30 });
+  Object.assign(firstReport[0], { totalEncodeTime: 0.3, encoderImplementation: 'ExternalEncoder', powerEfficientEncoder: true });
+  const first = summarizeWebRtcStats(firstReport);
+  assert.equal(first.metrics.encoderImplementation, 'ExternalEncoder');
+  assert.equal(first.metrics.powerEfficientEncoder, true);
+  assert.equal(first.metrics.encodeTimePerFrameMs, null);
+  const nextReport = outboundReport({ timestamp: 2_000, framesEncoded: 90 });
+  Object.assign(nextReport[0], { totalEncodeTime: 0.6, powerEfficientEncoder: false });
+  const next = summarizeWebRtcStats(nextReport, first.counters);
+  assert.equal(next.metrics.powerEfficientEncoder, false);
+  assert.equal(next.metrics.encodeTimePerFrameMs, 5);
+  assert.equal(next.metrics.encoderImplementation, null);
+  const reset = outboundReport({ timestamp: 3_000, framesEncoded: 1 });
+  Object.assign(reset[0], { totalEncodeTime: 0.01 });
+  assert.equal(summarizeWebRtcStats(reset, next.counters).metrics.encodeTimePerFrameMs, null);
+  assert.equal(summarizeWebRtcStats(outboundReport()).metrics.powerEfficientEncoder, null);
+});
+
 test('outbound video: reads codec, remote feedback and selected transport pair', () => {
   const result = summarizeWebRtcStats(new Map(outboundReport().map((entry) => [entry.id, entry])));
 
@@ -180,6 +199,9 @@ test('reports with missing or partial fields return null metrics without throwin
     frameHeight: null,
     codec: null,
     codecFmtpLine: null,
+    encoderImplementation: null,
+    powerEfficientEncoder: null,
+    encodeTimePerFrameMs: null,
     qualityLimitationReason: null,
     roundTripTimeSeconds: null,
     remoteRoundTripTimeSeconds: null,

@@ -84,6 +84,9 @@ function StreamMetrics({ peer, index, outbound }) {
           {outbound && <div><dt>Limite desta conexão</dt><dd>{formatBitrate(peer.targetVideoBitrate)}</dd></div>}
           {outbound && <div><dt>Banda estimada</dt><dd>{formatBitrate(peer.availableOutgoingBitrate)}</dd></div>}
           <div><dt>Codec</dt><dd>{metrics.codec || '—'}</dd></div>
+          {outbound && <div><dt>Codificador</dt><dd>{metrics.encoderImplementation || 'Não informado'}</dd></div>}
+          {outbound && <div><dt>Eficiência sinalizada</dt><dd>{metrics.powerEfficientEncoder === true ? 'Sim' : metrics.powerEfficientEncoder === false ? 'Não' : 'Não informada'}</dd></div>}
+          {outbound && <div><dt>Codificação por quadro</dt><dd>{formatRate(metrics.encodeTimePerFrameMs, ' ms')}</dd></div>}
           <div><dt>RTT</dt><dd>{formatMilliseconds(metrics.roundTripTimeSeconds)}</dd></div>
           <div><dt>Perda de pacotes</dt><dd>{formatLoss(metrics.fractionLost)}</dd></div>
           <div><dt>Jitter</dt><dd>{formatMilliseconds(metrics.jitterSeconds)}</dd></div>

@@ -1,36 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
 import InviteServerModal from './InviteServerModal.jsx';
+import VoiceConnectionPanel from './VoiceConnectionPanel.jsx';
 
 function IconTexto() {
-  return <span className="channel-icon">#</span>;
+  return <span className="channel-icon" aria-hidden="true">#</span>;
 }
 
 function IconVoz() {
   return (
-    <span className="channel-icon">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path
-          d="M8 1.5a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0V4A2.5 2.5 0 0 0 8 1.5Z"
-          fill="currentColor"
-        />
-        <path
-          d="M3.5 7.5v0.5a4.5 4.5 0 0 0 9 0V7.5"
-          stroke="currentColor"
-          strokeWidth="1.3"
-          strokeLinecap="round"
-          fill="none"
-        />
-        <path d="M8 12.5v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      </svg>
+    <span className="channel-icon" aria-hidden="true">
+      <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8h3l4-4v12l-4-4H3V8ZM13 7a4.5 4.5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"/></svg>
     </span>
   );
 }
 
-function Icon({ nome, size = 17 }) {
+function Icon({ nome, size = 17, muted = false }) {
   const paths = {
     mic: <><rect x="6" y="2" width="6" height="11" rx="3" /><path d="M3.5 9a5.5 5.5 0 0 0 11 0M9 14.5v3M6 17.5h6" /></>,
-    audio: <><path d="M4 9h3l4-3v12l-4-3H4z" /><path d="M14 9a4 4 0 0 1 0 6M16 6a8 8 0 0 1 0 12" /></>,
+    audio: <><path d="M3 11V9a7 7 0 0 1 14 0v2"/><rect x="3" y="10" width="3" height="7" rx="1.5"/><rect x="14" y="10" width="3" height="7" rx="1.5"/></>,
     screen: <><rect x="2.5" y="3" width="15" height="11" rx="1.5" /><path d="M7 17h6M10 14v3" /></>,
     settings: <><circle cx="10" cy="10" r="3" /><path d="M10 2v2M10 16v2M18 10h-2M4 10H2M15.7 4.3l-1.4 1.4M5.7 14.3l-1.4 1.4M15.7 15.7l-1.4-1.4M5.7 5.7 4.3 4.3" /></>,
     logout: <><path d="M8 3H4.5A1.5 1.5 0 0 0 3 4.5v11A1.5 1.5 0 0 0 4.5 17H8" /><path d="m12 6 4 4-4 4M16 10H7" /></>,
@@ -39,7 +27,7 @@ function Icon({ nome, size = 17 }) {
     trash: <><path d="M3 5h14M8 5V3h4v2M5 5l1 13h8l1-13M8 9v5M12 9v5" /></>,
     call: <><path d="M5.5 3.5 8 6 6.5 8.5a12 12 0 0 0 5 5L14 12l2.5 2.5-1.7 2.2c-.5.6-1.3.8-2 .5A16 16 0 0 1 2.8 7.2c-.3-.7-.1-1.5.5-2L5.5 3.5Z" /></>,
   };
-  return <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[nome]}</svg>;
+  return <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[nome]}{muted && <path d="m2 2 16 16" strokeWidth="2"/>}</svg>;
 }
 
 export default function ChannelSidebar({
@@ -49,7 +37,7 @@ export default function ChannelSidebar({
   onExcluirServidor,
   onSairDoServidor,
   minhasPermissoes = {},
-  canais,
+  canais = [],
   canalAtivoId,
   onSelecionar,
   usuario,
@@ -58,8 +46,8 @@ export default function ChannelSidebar({
   onAbrirConfiguracao,
   canalDeVoz, // { id, nome } | null — canal de voz atualmente conectado
   presencaVoz, // { canalId: [{ socketId, nome, avatarCor, avatarUrl, usuarioId }] } — de QUALQUER canal, mesmo sem estar nele
-  vozEstado, // { micMudo, audioMudo, compartilhandoTela }
-  vozAcoes, // { onAlternarMic, onAlternarAudio, onAlternarTela, onDesconectar }
+  vozEstado = {}, // { micMudo, audioMudo, compartilhandoTela }
+  vozAcoes = {}, // { onAlternarMic, onAlternarAudio, onAlternarTela, onDesconectar }
   nomeUsuarioNaVoz,
   onAbrirServidorConfiguracao,
   onCriarCanal,
@@ -81,8 +69,18 @@ export default function ChannelSidebar({
         setMenuPerfilAberto(false);
       }
     };
+    const aoTeclar = (event) => {
+      if (event.key === 'Escape') {
+        setMenuServidorAberto(false);
+        setMenuPerfilAberto(false);
+      }
+    };
     document.addEventListener('mousedown', fechar);
-    return () => document.removeEventListener('mousedown', fechar);
+    document.addEventListener('keydown', aoTeclar);
+    return () => {
+      document.removeEventListener('mousedown', fechar);
+      document.removeEventListener('keydown', aoTeclar);
+    };
   }, []);
   const canaisTexto = canais.filter((c) => c.tipo === 'texto');
   const canaisVoz = canais.filter((c) => c.tipo === 'voz');
@@ -129,10 +127,10 @@ export default function ChannelSidebar({
   }
 
   return (
-    <div className="channel-sidebar" ref={menuRef}>
+    <aside className="channel-sidebar" aria-label={`Canais de ${servidorNome}`} ref={menuRef}>
       <div className="channel-sidebar__header">
         <button type="button" className="server-name-trigger" onClick={() => setMenuServidorAberto((aberto) => !aberto)} aria-expanded={menuServidorAberto}>
-          <span>{servidorNome}</span><span className="server-name-trigger__chevron">⌄</span>
+          <span>{servidorNome}</span><span className="server-name-trigger__chevron" aria-hidden="true">⌄</span>
         </button>
         {menuServidorAberto && <div className="sidebar-popover server-menu">
           {codigoConvite && <button type="button" onClick={() => { setConviteAberto(true); setMenuServidorAberto(false); }}><Icon nome="invite" />Convidar para o servidor</button>}
@@ -158,7 +156,7 @@ export default function ChannelSidebar({
 
       <div className="channel-sidebar__list">
         <div className="channel-group-label">
-          <span>Canais de texto</span>
+          <span><span className="channel-group-label__chevron" aria-hidden="true">⌄</span>Canais de texto</span>
           {podeGerenciarCanais && (
             <button type="button" className="channel-group-label__add" title="Criar canal de texto" onClick={() => onCriarCanal('texto')}>
               +
@@ -169,15 +167,17 @@ export default function ChannelSidebar({
           <div
             key={c.id}
             className={`channel-item${c.id === canalAtivoId ? ' active' : ''}`}
-            onClick={() => onSelecionar(c)}
           >
-            <IconTexto />
-            <span style={{ flex: 1 }}>{c.nome}</span>
+            <button type="button" className="channel-item__select" aria-label={`Abrir canal de texto ${c.nome}`} aria-current={c.id === canalAtivoId ? 'page' : undefined} onClick={() => onSelecionar(c)}>
+              <IconTexto />
+              <span className="channel-item__name">{c.nome}</span>
+            </button>
             {podeGerenciarCanais && (
               <button
                 type="button"
                 className="channel-item__apagar"
                 title="Apagar canal"
+                aria-label={`Apagar canal ${c.nome}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (window.confirm(`Apagar o canal #${c.nome}?`)) onApagarCanal(c.id);
@@ -188,7 +188,7 @@ export default function ChannelSidebar({
         ))}
 
         <div className="channel-group-label">
-          <span>Canais de voz</span>
+          <span><span className="channel-group-label__chevron" aria-hidden="true">⌄</span>Canais de voz</span>
           {podeGerenciarCanais && (
             <button type="button" className="channel-group-label__add" title="Criar canal de voz" onClick={() => onCriarCanal('voz')}>
               +
@@ -201,18 +201,18 @@ export default function ChannelSidebar({
             <React.Fragment key={c.id}>
               <div
                 className={`channel-item${c.id === canalAtivoId ? ' active' : ''}`}
-                onClick={() => onSelecionar(c)}
               >
-                <IconVoz />
-                <span style={{ flex: 1 }}>{c.nome}</span>
-                {listaPresenca.length > 0 && (
-                  <span className="voz-contador-participantes">{listaPresenca.length}</span>
-                )}
+                <button type="button" className="channel-item__select" aria-label={`Abrir canal de voz ${c.nome}`} aria-current={c.id === canalAtivoId ? 'page' : undefined} onClick={() => onSelecionar(c)}>
+                  <IconVoz />
+                  <span className="channel-item__name">{c.nome}</span>
+                  {listaPresenca.length > 0 && <span className="voz-contador-participantes" aria-label={`${listaPresenca.length} participantes`}>{listaPresenca.length}</span>}
+                </button>
                 {podeGerenciarCanais && (
                   <button
                     type="button"
                     className="channel-item__apagar"
                     title="Apagar canal"
+                    aria-label={`Apagar canal ${c.nome}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (window.confirm(`Apagar o canal ${c.nome}?`)) onApagarCanal(c.id);
@@ -230,7 +230,7 @@ export default function ChannelSidebar({
                         <Avatar
                           nome={p.nome}
                           avatarUrl={souEu ? usuario.avatarUrl : p.avatarUrl}
-                          avatarCor={souEu ? usuario.avatarCor : p.avatarCor || '#5865f2'}
+                          avatarCor={souEu ? usuario.avatarCor : p.avatarCor || '#9270f4'}
                           tamanho="sm"
                         />
                         <span className="voz-participante-nome">
@@ -267,33 +267,7 @@ export default function ChannelSidebar({
         })}
       </div>
 
-      {canalDeVoz && (
-        <div className="voz-status-bar">
-          <div className="voz-status-bar__linha">
-            <span className="voz-status-bar__icone-onda"><span className="voice-signal" /></span>
-            <div className="voz-status-bar__textos">
-              <div className="voz-status-bar__titulo">Voz conectada</div>
-              <div className="voz-status-bar__subtitulo">{canalDeVoz.nome} / {servidorNome}</div>
-            </div>
-            <button className="voz-status-bar__desconectar" onClick={vozAcoes.onDesconectar} title="Desconectar">
-              <Icon nome="call" />
-            </button>
-          </div>
-          {vozEstado.erro && <div className="voz-status-bar__erro">{vozEstado.erro}</div>}
-          {vozEstado.erroCompartilhamento && (
-            <div className="voz-status-bar__erro">{vozEstado.erroCompartilhamento}</div>
-          )}
-          <div className="voz-status-bar__acoes">
-            <button
-              className={`voz-icone-botao${vozEstado.compartilhandoTela ? ' ativo' : ''}`}
-              onClick={vozEstado.compartilhandoTela ? vozAcoes.onPararTela : vozAcoes.onIniciarTela}
-              title={vozEstado.compartilhandoTela ? 'Parar compartilhamento de tela' : 'Compartilhar tela'}
-            >
-              <Icon nome="screen" />
-            </button>
-          </div>
-        </div>
-      )}
+      <VoiceConnectionPanel channel={canalDeVoz ? { ...canalDeVoz, servidorNome: canalDeVoz.servidorNome || servidorNome } : null} state={vozEstado} actions={vozAcoes}/>
 
       <div className="user-panel">
         <button type="button"
@@ -318,22 +292,26 @@ export default function ChannelSidebar({
           type="button"
           className={`user-panel__icone${canalDeVoz && vozEstado.micMudo ? ' ativo' : ''}`}
           onClick={vozAcoes.onAlternarMic}
-          disabled={!canalDeVoz}
+          disabled={!canalDeVoz || typeof vozAcoes.onAlternarMic !== 'function'}
+          aria-label={vozEstado.micMudo ? 'Ativar microfone' : 'Silenciar microfone'}
+          aria-pressed={Boolean(vozEstado.micMudo)}
           title={canalDeVoz ? (vozEstado.micMudo ? 'Ativar microfone' : 'Mutar microfone') : 'Entre num canal de voz primeiro'}
         >
-          <Icon nome="mic" />
+          <Icon nome="mic" muted={vozEstado.micMudo}/>
         </button>
         <button
           type="button"
           className={`user-panel__icone${canalDeVoz && vozEstado.audioMudo ? ' ativo' : ''}`}
           onClick={vozAcoes.onAlternarAudio}
-          disabled={!canalDeVoz}
+          disabled={!canalDeVoz || typeof vozAcoes.onAlternarAudio !== 'function'}
+          aria-label={vozEstado.audioMudo ? 'Ativar áudio' : 'Desativar áudio'}
+          aria-pressed={Boolean(vozEstado.audioMudo)}
           title={canalDeVoz ? (vozEstado.audioMudo ? 'Ativar áudio' : 'Silenciar áudio') : 'Entre num canal de voz primeiro'}
         >
-          <Icon nome="audio" />
+          <Icon nome="audio" muted={vozEstado.audioMudo}/>
         </button>
-        <button type="button" className="user-panel__icone" onClick={onAbrirConfiguracao} title="Configurações de áudio"><Icon nome="settings" /></button>
+        <button type="button" className="user-panel__icone" onClick={onAbrirConfiguracao} title="Configurações de usuário" aria-label="Configurações de usuário"><Icon nome="settings" /></button>
       </div>
-    </div>
+    </aside>
   );
 }

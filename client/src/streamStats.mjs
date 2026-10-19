@@ -6,6 +6,9 @@ const EMPTY_METRICS = Object.freeze({
   frameHeight: null,
   codec: null,
   codecFmtpLine: null,
+  encoderImplementation: null,
+  powerEfficientEncoder: null,
+  encodeTimePerFrameMs: null,
   qualityLimitationReason: null,
   roundTripTimeSeconds: null,
   remoteRoundTripTimeSeconds: null,
@@ -149,6 +152,7 @@ function getStreamCounters(stream) {
     timestamp: finiteNumber(stream.timestamp),
     bytes: finiteNumber(isOutbound ? stream.bytesSent : stream.bytesReceived),
     frames: finiteNumber(isOutbound ? stream.framesEncoded ?? stream.framesSent : stream.framesDecoded ?? stream.framesReceived),
+    totalEncodeTime: isOutbound ? finiteNumber(stream.totalEncodeTime) : null,
     packetsLost: finiteNumber(stream.packetsLost),
     packetsReceived: finiteNumber(stream.packetsReceived),
   };
@@ -180,6 +184,10 @@ export function summarizeWebRtcStats(report, previousCounters = null) {
   metrics.frameHeight = finiteNumber(stream.frameHeight);
   metrics.codec = typeof codec?.mimeType === 'string' ? codec.mimeType : null;
   metrics.codecFmtpLine = typeof codec?.sdpFmtpLine === 'string' ? codec.sdpFmtpLine : null;
+  metrics.encoderImplementation = outbound && typeof stream.encoderImplementation === 'string'
+    ? stream.encoderImplementation : null;
+  metrics.powerEfficientEncoder = outbound && typeof stream.powerEfficientEncoder === 'boolean'
+    ? stream.powerEfficientEncoder : null;
   metrics.qualityLimitationReason = outbound
     && ['none', 'cpu', 'bandwidth', 'other'].includes(stream.qualityLimitationReason)
     ? stream.qualityLimitationReason
@@ -208,6 +216,10 @@ export function summarizeWebRtcStats(report, previousCounters = null) {
 
     const frameRate = intervalRate(streamStats.frames, previous.frames, streamStats.timestamp, previous.timestamp);
     if (frameRate && frameRate.seconds > 0) metrics.framesPerSecond = frameRate.delta / frameRate.seconds;
+    const encodeTime = intervalRate(streamStats.totalEncodeTime, previous.totalEncodeTime, streamStats.timestamp, previous.timestamp);
+    if (encodeTime && frameRate && frameRate.delta > 0) {
+      metrics.encodeTimePerFrameMs = encodeTime.delta * 1000 / frameRate.delta;
+    }
   }
 
   return { metrics, counters: streamStats };

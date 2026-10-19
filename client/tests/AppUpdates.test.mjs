@@ -17,6 +17,7 @@ function stubs() {
     resolveId(id) {
       if (id === 'socket.io-client') return '\0update-socket';
       const match = id.match(/^\.\/components\/(.+)\.jsx$/);
+      if (match && ['HomeSidebar', 'DesktopTitlebar'].includes(match[1])) return null;
       return match && match[1] !== 'UpdateBanner' ? '\0update-screen:' + match[1] : null;
     },
     load(id) {
@@ -67,7 +68,7 @@ function prepare({ loggedIn = false, room = false } = {}) {
   const listeners = new Set();
   const calls = { download: 0, install: 0, check: 0, snapshot: 0 };
   globalThis.window = new EventTarget();
-  window.location = { search: room ? '?room=active-room' : '', href: 'https://astralis.test/' + (room ? '?room=active-room' : '') };
+  window.location = { search: room ? '?room=active-room' : '?view=salas', href: 'https://astralis.test/' + (room ? '?room=active-room' : '?view=salas') };
   window.history = { replaceState() {} };
   window.electronAPI = {
     obterStatusAtualizacao: () => { calls.snapshot += 1; return Promise.resolve({ status: 'available', version: '9.8.7' }); },

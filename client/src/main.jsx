@@ -2,6 +2,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import './styles.css';
 import './screen-rooms.css';
+import './discord-hud.css';
 
 // Observação: propositalmente SEM <React.StrictMode> aqui.
 // O StrictMode monta/desmonta os componentes duas vezes de propósito

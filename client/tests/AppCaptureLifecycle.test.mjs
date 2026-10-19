@@ -16,6 +16,7 @@ function boundaryStubs() {
     resolveId(id) {
       if (id === 'socket.io-client') return '\0capture-socket';
       const component = id.match(/^\.\/components\/(.+)\.jsx$/);
+      if (component && ['HomeSidebar', 'DesktopTitlebar'].includes(component[1])) return null;
       return component ? '\0capture-component:' + component[1] : null;
     },
     load(id) {

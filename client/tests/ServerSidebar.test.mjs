@@ -76,3 +76,20 @@ test('encaminha cliques de amigos, servidor e adicionar para as ações corretas
 
   assert.deepEqual(chamadas, [['amigos'], ['servidor', 'beta'], ['adicionar']]);
 });
+
+test('a marca Astralis abre a página inicial e salas conserva navegação própria', () => {
+  const chamadas = [];
+  const props = criarProps({ viewAtiva: 'salas', onAbrirSalas: () => chamadas.push('salas') });
+  const markup = renderToStaticMarkup(React.createElement(ServerSidebar, props));
+  assert.match(markup, /src="\.\/astralis-mark\.svg"[^>]+alt="Astralis"/);
+  assert.match(markup, /aria-label="Abrir salas de tela" aria-current="page"/);
+  const botoes = coletarElementos(ServerSidebar(props)).filter((elemento) => elemento.type === 'button');
+  botoes.find((botao) => botao.props['aria-label'] === 'Abrir salas de tela').props.onClick();
+  assert.deepEqual(chamadas, ['salas']);
+});
+
+test('mensagens diretas mantêm o início selecionado e aceitam lista vazia', () => {
+  const markup = renderToStaticMarkup(React.createElement(ServerSidebar, criarProps({ servidores: [], viewAtiva: 'dm' })));
+  assert.match(markup, /class="server-icon active"[^>]+aria-label="Abrir amigos"[^>]+aria-current="page"/);
+  assert.equal((markup.match(/<button/g) || []).length, 2);
+});

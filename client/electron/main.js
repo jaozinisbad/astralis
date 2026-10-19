@@ -340,7 +340,7 @@ function configurarPermissoesDeMidia() {
   // 'fullscreen' precisa estar aqui — sem ela, o Electron nega o pedido de
   // tela cheia (video.requestFullscreen()) em silêncio, sem erro nenhum,
   // o que fazia o botão "Tela cheia" parecer simplesmente não funcionar.
-  const permissoesDeMidia = new Set(['media', 'microphone', 'camera', 'fullscreen']);
+  const permissoesDeMidia = new Set(['media', 'microphone', 'camera', 'fullscreen', 'notifications']);
 
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(permissoesDeMidia.has(permission));
@@ -353,8 +353,13 @@ function configurarPermissoesDeMidia() {
 
 function createWindow() {
   const win = new BrowserWindow({
-    width: 1100,
-    height: 700,
+    width: 1280,
+    height: 820,
+    minWidth: 760,
+    minHeight: 560,
+    backgroundColor: '#24212c',
+    titleBarStyle: 'hidden',
+    ...(process.platform === 'win32' ? { titleBarOverlay: { color: '#15121b', symbolColor: '#c9c1d8', height: 32 } } : {}),
     icon: path.join(__dirname, '../build/icon.ico'),
     webPreferences: {
       contextIsolation: true,
