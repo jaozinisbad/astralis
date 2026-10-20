@@ -6,14 +6,16 @@ const vm = require('node:vm');
 const socketAuth = require('../socketAuth');
 const streamRooms = require('../streamRooms');
 const iceConfig = require('../iceConfig');
+const directCalls = require('../directCalls');
 
 // Executa os handlers reais com banco e transporte isolados, sem tocar produção.
-function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } = {}) {
+function criarServidor({ autorizado = true, bancoDisponivel = true, amigos = true, env = {} } = {}) {
   const handlers = {};
   const endpoints = {};
   const enviados = [];
   const registros = [];
   const erros = [];
+  const settings = new Map();
   const socketRegistry = new Map();
   const socketListeners = new Map();
   let conectar;
@@ -28,7 +30,8 @@ function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } =
     },
     join: (room) => rooms.add(room),
     leave: (room) => rooms.delete(room),
-    emit() {},
+    emit: (evento, dados) => enviados.push({ destino: 'socket-teste', evento, dados }),
+    to: (destino) => ({ emit: (evento, dados) => enviados.push({ destino, evento, dados }) }),
   };
   socketRegistry.set(socket.id, socket);
   const io = {
@@ -40,6 +43,7 @@ function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } =
   };
   const app = {
     use() {},
+    set: (name, value) => settings.set(name, value),
     get: (rota, handler) => { endpoints[rota] = handler; },
   };
   const express = Object.assign(() => app, { json: () => () => {} });
@@ -53,6 +57,7 @@ function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } =
         registros.push({ id, args });
         return { id };
       }
+      if (sql.startsWith('SELECT id, nome')) return { id: args[0], nome: `Pessoa ${args[0]}` };
       return { servidor_id: 2 };
     },
   };
@@ -65,11 +70,15 @@ function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } =
     './socketAuth': socketAuth,
     './streamRooms': streamRooms,
     './iceConfig': iceConfig,
+    './directCalls': directCalls,
     './routes/auth': {}, './routes/mensagens': {}, './routes/recuperacao': {},
     './routes/servidores': {
       router: {}, ehMembro: async () => autorizado, temPermissao: async () => autorizado,
     },
-    './routes/amigos': { router: {}, compartilhamServidor: async () => autorizado },
+    './routes/amigos': {
+      router: {}, saoAmigos: async () => amigos, podemConversar: async () => autorizado,
+      amigosDe: async () => [],
+    },
     './eventosConta': { on() {} },
     './presenca': { socketsPorUsuario: new Map([[7, new Set(['socket-teste'])], [8, new Set(['amigo'])]]) },
   };
@@ -81,7 +90,7 @@ function criarServidor({ autorizado = true, bancoDisponivel = true, env = {} } =
     process: { env }, console: { log() {}, error: (...args) => erros.push(args) },
   });
   conectar(socket);
-  return { handlers, socketListeners, enviados, registros, endpoints, erros, socket, io, conectar };
+  return { handlers, socketListeners, enviados, registros, endpoints, erros, socket, io, conectar, settings };
 }
 
 async function enviar(servidor, evento, dados) {
@@ -153,6 +162,7 @@ test('health expõe apenas a disponibilidade da configuração TURN validada, se
       assert.equal(headers['Cache-Control'], 'no-store');
       assert.deepEqual(JSON.parse(JSON.stringify(resultado)), {
         status: bancoDisponivel ? 'ok' : 'unavailable', turnConfigured: configured,
+        ...(bancoDisponivel ? { features: { friendships: true, directCalls: true } } : {}),
       });
       assert.equal(JSON.stringify(resultado).includes('private-test-secret'), false);
       assert.equal(JSON.stringify(resultado).includes('relay.example'), false);
@@ -225,4 +235,68 @@ test('sinalização WebRTC legada só chega a outro socket no mesmo canal de voz
   peer.canalVozAtual = 'canal-a';
   servidor.handlers['webrtc-oferta']({ para: peer.id, oferta: { type: 'offer' } });
   assert.equal(servidor.enviados.filter((item) => item.destino === peer.id && item.evento === 'webrtc-oferta').length, 1);
+});
+
+test('wiring da chamada direta rejeita terceiros, encaminha mídia após aceite e limpa ao desligar', async () => {
+  const servidor = criarServidor();
+  function novoSocket(id, usuarioId) {
+    const listeners = new Map();
+    const handlers = {};
+    const rooms = new Set();
+    const socket = {
+      id, usuario: { id: usuarioId, nome: `Pessoa ${usuarioId}` }, rooms, connected: true,
+      on(evento, handler) {
+        handlers[evento] = handler;
+        if (!listeners.has(evento)) listeners.set(evento, []);
+        listeners.get(evento).push(handler);
+      },
+      emit: (evento, dados) => servidor.enviados.push({ destino: id, evento, dados }),
+      join: (room) => rooms.add(room), leave: (room) => rooms.delete(room),
+      to: (destino) => ({ emit: (evento, dados) => servidor.enviados.push({ destino, evento, dados }) }),
+    };
+    servidor.io.sockets.sockets.set(id, socket);
+    servidor.conectar(socket);
+    return { socket, handlers, listeners };
+  }
+  const callee = novoSocket('callee', 8);
+  const third = novoSocket('third', 9);
+  const sender = servidor.socket;
+  const invoke = (handlers, event, data) => new Promise((resolve) => handlers[event](data, resolve));
+  const started = await invoke(servidor.handlers, 'chamada:iniciar', { paraUsuarioId: 8 });
+  assert.equal(started.ok, true);
+  servidor.handlers['webrtc-oferta']({ para: 'callee', oferta: { type: 'offer' } });
+  assert.equal(servidor.enviados.some((item) => item.evento === 'webrtc-oferta'), false);
+  assert.equal((await invoke(third.handlers, 'chamada:aceitar', { callId: started.call.id })).code, 'forbidden');
+  await invoke(callee.handlers, 'chamada:aceitar', { callId: started.call.id });
+  await invoke(servidor.handlers, 'entrar-canal-voz', started.call.canalId);
+  await invoke(callee.handlers, 'entrar-canal-voz', started.call.canalId);
+  assert.equal((await invoke(third.handlers, 'entrar-canal-voz', started.call.canalId)).ok, false);
+  for (const [event, property] of [['webrtc-oferta', 'oferta'], ['webrtc-resposta', 'resposta'], ['webrtc-candidato', 'candidato']]) {
+    servidor.handlers[event]({ para: 'callee', [property]: { media: event } });
+    third.handlers[event]({ para: 'callee', [property]: { media: 'forged' } });
+    const sent = servidor.enviados.filter((item) => item.evento === event);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].dados.de, sender.id);
+  }
+  servidor.handlers['tela-parada']();
+  assert.ok(servidor.enviados.some((item) => item.evento === 'tela-parada' && item.destino === 'callee'));
+  await invoke(servidor.handlers, 'chamada:encerrar', { callId: started.call.id });
+  assert.equal(sender.canalVozAtual, null);
+  assert.equal(callee.socket.canalVozAtual, null);
+  servidor.handlers['webrtc-oferta']({ para: 'callee', oferta: { type: 'offer' } });
+  assert.equal(servidor.enviados.filter((item) => item.evento === 'webrtc-oferta').length, 1);
+});
+
+test('wiring não deixa entrar em voz de servidor enquanto há convite direto pendente', async () => {
+  const servidor = criarServidor();
+  const recipient = {
+    id: 'callee', usuario: { id: 8, nome: 'Pessoa 8' }, connected: true,
+    on() {}, emit() {}, rooms: new Set(), join() {}, leave() {},
+  };
+  servidor.io.sockets.sockets.set(recipient.id, recipient);
+  servidor.conectar(recipient);
+  await new Promise((resolve) => servidor.handlers['chamada:iniciar']({ paraUsuarioId: 8 }, resolve));
+  const response = await new Promise((resolve) => servidor.handlers['entrar-canal-voz'](5, resolve));
+  assert.equal(response.code, 'busy');
+  assert.equal(servidor.socket.canalVozAtual, undefined);
 });

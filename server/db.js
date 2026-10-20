@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { Pool, types } = require('pg');
+const { friendshipSchema } = require('./friendships');
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL e obrigatoria para iniciar o servidor.');
 
@@ -110,6 +111,7 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS mensagens_canal_id_idx ON mensagens(canal_id, id);
     CREATE INDEX IF NOT EXISTS membros_servidor_usuario_id_idx ON membros_servidor(usuario_id);
   `);
+  await db.query(friendshipSchema());
   await db.query(`
     INSERT INTO cargos (servidor_id, nome, cor, permissoes, posicao)
     SELECT s.id, 'Administrador', '#e74c3c',

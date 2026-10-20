@@ -9,13 +9,14 @@ const { all, get, run, initDb } = require('./db');
 const authRoutes = require('./routes/auth');
 const { router: servidoresRoutes, ehMembro, temPermissao } = require('./routes/servidores');
 const mensagensRoutes = require('./routes/mensagens');
-const { router: amigosRoutes, compartilhamServidor } = require('./routes/amigos');
+const { router: amigosRoutes, amigosDe, saoAmigos, podemConversar } = require('./routes/amigos');
 const { socketsPorUsuario } = require('./presenca');
 const recuperacaoRoutes = require('./routes/recuperacao');
 const eventosConta = require('./eventosConta');
 const { createSocketAuthMiddleware } = require('./socketAuth');
 const { createStreamRoomManager, registerStreamRoomEvents } = require('./streamRooms');
 const { createRoomIceConfiguration } = require('./iceConfig');
+const { createDirectCallManager, isDirectChannel } = require('./directCalls');
 
 const app = express();
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -30,6 +31,26 @@ const io = new Server(server, {
   maxHttpBufferSize: 8e6,
 });
 const streamRoomManager = createStreamRoomManager();
+const directCallManager = createDirectCallManager({
+  io,
+  areFriends: saoAmigos,
+  getUser: (usuarioId) => get('SELECT id, nome, avatar_cor, avatar_url FROM usuarios WHERE id = ?', usuarioId),
+  isExternallyBusy: (usuarioId) => [...io.sockets.sockets.values()].some((socket) => (
+    Number(socket.usuario?.id) === usuarioId && socket.connected !== false
+    && (Boolean(socket.canalVozAtual && !isDirectChannel(socket.canalVozAtual))
+      || [...(socket.rooms || [])].some((room) => room.startsWith('sala-')))
+  )),
+});
+app.set('notificarAmizades', (usuarioIds) => {
+  for (const usuarioId of usuarioIds) {
+    socketsPorUsuario.get(Number(usuarioId))?.forEach((socketId) => {
+      io.to(socketId).emit('amizades-atualizadas');
+    });
+  }
+  void directCallManager.revalidateUsers(usuarioIds).catch((error) => {
+    console.error('Erro ao atualizar chamadas após mudança de amizade:', error);
+  });
+});
 
 app.use(express.json({ limit: '8mb' }));
 
@@ -44,7 +65,7 @@ app.get('/health', async (_req, res) => {
     .some((iceServer) => Boolean(iceServer.username && iceServer.credential));
   try {
     await get('SELECT 1');
-    res.json({ status: 'ok', turnConfigured });
+    res.json({ status: 'ok', turnConfigured, features: { friendships: true, directCalls: true } });
   } catch {
     res.status(503).json({ status: 'unavailable', turnConfigured });
   }
@@ -67,20 +88,15 @@ const asyncSocket = (handler) => (...args) => {
   Promise.resolve(handler(...args)).catch((error) => console.error('Erro em evento Socket.IO:', error));
 };
 
-async function amigosDe(usuarioId) {
-  return all(
-      `SELECT DISTINCT u.id
-       FROM usuarios u
-       JOIN membros_servidor m2 ON m2.usuario_id = u.id
-       WHERE m2.servidor_id IN (
-         SELECT servidor_id FROM membros_servidor WHERE usuario_id = ?
-       )
-       AND u.id != ?`
-    , usuarioId, usuarioId).then((rows) => rows.map((linha) => linha.id));
-}
-
 async function avisarAmigos(usuarioId, evento) {
-  (await amigosDe(usuarioId)).forEach((amigoId) => {
+  // Server member lists still receive presence, independently of friendship.
+  const [friends, members] = await Promise.all([
+    amigosDe(usuarioId),
+    all(`SELECT DISTINCT m2.usuario_id AS id FROM membros_servidor m1
+      JOIN membros_servidor m2 ON m1.servidor_id = m2.servidor_id
+      WHERE m1.usuario_id = ? AND m2.usuario_id != ?`, usuarioId, usuarioId),
+  ]);
+  new Set([...friends, ...members.map(member => member.id)]).forEach((amigoId) => {
     const sockets = socketsPorUsuario.get(amigoId);
     sockets?.forEach((socketId) => io.to(socketId).emit(evento, { usuarioId }));
   });
@@ -119,6 +135,7 @@ async function avisarPresencaVoz(canalId) {
 }
 
 function sairDoCanalVoz(socket) {
+  if (directCallManager.leaveVoice(socket)) return;
   const canalId = socket.canalVozAtual;
   if (!canalId) return;
 
@@ -156,7 +173,7 @@ io.on('connection', (socket) => {
   console.log('Novo cliente conectado:', socket.usuario.nome);
 
   // Presença online: registra este socket para o usuário e avisa os
-  // amigos (quem compartilha servidor) que ele ficou online — só na
+  // amigos e membros dos mesmos servidores que ele ficou online — só na
   // primeira conexão desse usuário (se ele já tinha outra aba aberta,
   // já estava online, não precisa avisar de novo).
   // Fecha a janela entre a checagem do token e a entrada neste callback.
@@ -171,6 +188,7 @@ io.on('connection', (socket) => {
   if (!socketsPorUsuario.has(socket.usuario.id)) socketsPorUsuario.set(socket.usuario.id, new Set());
   socketsPorUsuario.get(socket.usuario.id).add(socket.id);
   if (!jaEstavaOnline) void avisarAmigos(socket.usuario.id, 'amigo-online');
+  directCallManager.register(socket);
 
   // Entrar na "sala" de um canal de texto para receber as mensagens dele.
   socket.on('entrar-canal', asyncSocket(async (canalId) => {
@@ -229,17 +247,36 @@ io.on('connection', (socket) => {
 
   // --- Canal de voz: presença + sinalização WebRTC ---
 
-  socket.on('entrar-canal-voz', asyncSocket(async (canalId) => {
+  socket.on('entrar-canal-voz', asyncSocket(async (canalId, callback) => {
+    if (isDirectChannel(canalId)) {
+      const result = directCallManager.joinVoice(socket, canalId);
+      if (typeof callback === 'function') callback(result);
+      if (!result.ok) socket.emit('voz:erro', result);
+      return;
+    }
+    if (!Number.isSafeInteger(Number(canalId)) || Number(canalId) < 1) return;
     const canal = await servidorDoCanal(canalId);
     if (!canal || !(await ehMembro(canal.servidor_id, socket.usuario.id))) return;
 
-    // Se já estava em outro canal de voz, sai dele primeiro.
+    // Carrega o perfil antes de reservar o contexto de voz. Depois disso não há
+    // await entre a checagem e a entrada: outra aba não pode ocupar o mesmo usuário.
+    const usuario = await get('SELECT id, nome, avatar_cor, avatar_url FROM usuarios WHERE id = ?', socket.usuario.id);
+    if (!usuario || socket.connected === false) return;
+    const outraAbaEmVoz = [...io.sockets.sockets.values()].some((item) => (
+      item.id !== socket.id && Number(item.usuario?.id) === Number(socket.usuario.id) && item.canalVozAtual
+    ));
+    const chamadaDiretaOuSala = directCallManager.isUserBusy(Number(socket.usuario.id))
+      && !socket.canalVozAtual;
+    if (outraAbaEmVoz || isDirectChannel(socket.canalVozAtual) || chamadaDiretaOuSala) {
+      const result = { ok: false, code: 'busy', error: 'Encerre sua chamada atual antes de entrar neste canal.' };
+      if (typeof callback === 'function') callback(result);
+      socket.emit('voz:erro', result);
+      return;
+    }
+
     sairDoCanalVoz(socket);
 
     if (!canalVozParticipantes[canalId]) canalVozParticipantes[canalId] = new Map();
-
-    // Busca dados completos do usuário (incluindo avatar_cor e avatar_url)
-    const usuario = await get('SELECT id, nome, avatar_cor, avatar_url FROM usuarios WHERE id = ?', socket.usuario.id);
 
     // Manda pro recém-chegado a lista de quem já está na chamada.
     const peers = Array.from(canalVozParticipantes[canalId].entries()).map(([socketId, dadosUsuario]) => ({
@@ -268,6 +305,7 @@ io.on('connection', (socket) => {
       avatarUrl: usuario.avatar_url || null,
     });
     void avisarPresencaVoz(canalId);
+    if (typeof callback === 'function') callback({ ok: true });
   }));
 
   // Um cliente pede o retrato atual de quem está em cada canal de voz de
@@ -305,6 +343,7 @@ io.on('connection', (socket) => {
   }));
 
   socket.on('tela-parada', () => {
+    if (directCallManager.screenStopped(socket)) return;
     if (socket.canalVozAtual) {
       socket.to(`voz-${socket.canalVozAtual}`).emit('tela-parada', { socketId: socket.id });
     }
@@ -314,7 +353,7 @@ io.on('connection', (socket) => {
 
   socket.on('enviar-dm', asyncSocket(async ({ paraUsuarioId, conteudo }) => {
     if (!conteudo || !conteudo.trim()) return;
-    if (!(await compartilhamServidor(socket.usuario.id, paraUsuarioId))) return;
+    if (!(await podemConversar(socket.usuario.id, paraUsuarioId))) return;
 
     const resultado = await get('INSERT INTO mensagens_diretas (remetente_id, destinatario_id, conteudo) VALUES (?, ?, ?) RETURNING id',
       socket.usuario.id, paraUsuarioId, conteudo.trim());
@@ -341,24 +380,29 @@ io.on('connection', (socket) => {
   // papéis verificados pelo gerenciador.
   function alvoNaMesmaCall(socketId) {
     if (typeof socketId !== 'string' || !socket.canalVozAtual) return false;
+    if (isDirectChannel(socket.canalVozAtual)) return directCallManager.canSignal(socket, socketId);
     const alvo = io.sockets.sockets.get(socketId);
     return Boolean(alvo && alvo.canalVozAtual === socket.canalVozAtual);
   }
 
-  socket.on('webrtc-oferta', ({ para, oferta }) => {
+  socket.on('webrtc-oferta', (dados) => {
+    const { para, oferta } = dados || {};
     if (!alvoNaMesmaCall(para)) return;
     io.to(para).emit('webrtc-oferta', { de: socket.id, oferta });
   });
-  socket.on('webrtc-resposta', ({ para, resposta }) => {
+  socket.on('webrtc-resposta', (dados) => {
+    const { para, resposta } = dados || {};
     if (!alvoNaMesmaCall(para)) return;
     io.to(para).emit('webrtc-resposta', { de: socket.id, resposta });
   });
-  socket.on('webrtc-candidato', ({ para, candidato }) => {
+  socket.on('webrtc-candidato', (dados) => {
+    const { para, candidato } = dados || {};
     if (!alvoNaMesmaCall(para)) return;
     io.to(para).emit('webrtc-candidato', { de: socket.id, candidato });
   });
 
   socket.on('disconnect', () => {
+    directCallManager.disconnect(socket);
     sairDoCanalVoz(socket);
 
     const sockets = socketsPorUsuario.get(socket.usuario.id);
