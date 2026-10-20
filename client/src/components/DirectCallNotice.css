@@ -1,0 +1,18 @@
+.direct-call-overlay { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 20px; background: #080611b8; backdrop-filter: blur(8px); overflow: auto; }
+.direct-call-notice { position: relative; width: min(100%, 400px); box-sizing: border-box; padding: 40px 28px 28px; border: 1px solid var(--as-border, #3d3454); border-radius: 18px; background: var(--as-panel, #211b30); color: var(--as-text, #f4f0ff); text-align: center; box-shadow: 0 24px 100px #0006; }
+.direct-call-notice > .avatar { margin-inline: auto; }
+.direct-call-notice__brand { display: block; width: 28px; height: 28px; margin: 0 auto 24px; }
+.direct-call-notice h1 { margin: 22px 0 10px; overflow-wrap: anywhere; font-size: 24px; }
+.direct-call-notice p { margin: 10px 0; }
+.direct-call-notice small { display: block; color: var(--as-text-muted, #bcb2cc); line-height: 1.6; }
+.direct-call-notice__actions { display: flex; justify-content: center; gap: 20px; margin-top: 28px; }
+.direct-call-notice__actions button { display: flex; flex-direction: column; align-items: center; gap: 8px; border: 0; border-radius: 14px; padding: 14px 22px; color: white; font: inherit; cursor: pointer; }
+.direct-call-notice__decline { background: #ae344e; }
+.direct-call-notice__accept { background: var(--as-accent, #9270f4); }
+.direct-call-notice__actions button:disabled { opacity: .6; cursor: wait; }
+.direct-call-notice__error { color: #ff9eaf; font-size: 13px; }
+.direct-call-feedback { position: fixed; z-index: 350; bottom: 24px; right: 24px; display: flex; align-items: center; gap: 16px; max-width: min(420px, calc(100vw - 48px)); padding: 14px 18px; border: 1px solid var(--as-border, #3d3454); border-radius: 10px; background: var(--as-panel, #211b30); color: var(--as-text, #f4f0ff); box-shadow: 0 8px 40px #0005; }
+.direct-call-feedback button { background: transparent; color: inherit; border: 0; padding: 4px; cursor: pointer; font: inherit; }
+.social-dm__call-banner { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; background: #9270f41a; border-bottom: 1px solid var(--as-border, #3d3454); }
+.social-dm__call-banner button { border: 0; border-radius: 6px; background: var(--as-accent, #9270f4); color: white; padding: 9px 12px; font: inherit; cursor: pointer; }
+@media (max-width: 480px) { .direct-call-notice { padding: 28px 18px 22px; } .social-dm__call-banner { flex-wrap: wrap; font-size: 13px; } }

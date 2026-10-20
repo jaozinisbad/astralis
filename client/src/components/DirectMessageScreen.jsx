@@ -4,8 +4,9 @@ import { apiFetch } from '../api.js';
 import { useInterfacePreferences } from '../interfacePreferences.mjs';
 import { SocialIcon, SocialMessageList, SocialComposer, mergeSocialMessages, sameSocialId, useSocialNotifications } from './SocialMessageParts.jsx';
 import './SocialWorkspace.css';
+import { CallIcon } from './VoiceCallStage.jsx';
 
-export default function DirectMessageScreen({ amigo, socket, token, meuId, meuUsuario }) {
+export default function DirectMessageScreen({ amigo, socket, token, meuId, meuUsuario, onLigar, ligacaoPendente, chamadaAtiva, onAbrirChamada }) {
   const [mensagens, setMensagens] = useState([]);
   const [texto, setTexto] = useState('');
   const [carregando, setCarregando] = useState(true);
@@ -89,8 +90,15 @@ export default function DirectMessageScreen({ amigo, socket, token, meuId, meuUs
     <header className="social-header">
       <span className="social-dm__avatar"><Avatar nome={nomeAmigo} avatarUrl={prefs.streamerMode ? null : amigo.avatar_url} avatarCor={amigo.avatar_cor || 'var(--as-accent)'} tamanho="sm" /></span>
       <h1>{nomeAmigo}</h1><span className={`social-dm__presence ${amigo.online ? 'social-dm__presence--online' : ''}`} aria-label={amigo.online ? 'Online' : 'Offline'} />
-      <div className="social-header__actions"><button type="button" onClick={() => { setBuscaAberta((atual) => !atual); setBusca(''); }} aria-expanded={buscaAberta} title="Buscar nesta conversa" aria-label="Buscar nesta conversa"><SocialIcon name="search" /></button></div>
+      <div className="social-header__actions">
+        {onLigar && <button type="button" onClick={chamadaAtiva ? onAbrirChamada : onLigar}
+          disabled={!chamadaAtiva && (!conectado || !amigo.online || ligacaoPendente)}
+          title={chamadaAtiva ? 'Voltar à chamada' : !amigo.online ? 'Amigo offline' : 'Iniciar chamada de voz'}
+          aria-label={chamadaAtiva ? 'Voltar à chamada' : `Ligar para ${nomeAmigo}`}><CallIcon name="phone" size={22}/></button>}
+        <button type="button" onClick={() => { setBuscaAberta((atual) => !atual); setBusca(''); }} aria-expanded={buscaAberta} title="Buscar nesta conversa" aria-label="Buscar nesta conversa"><SocialIcon name="search" /></button>
+      </div>
     </header>
+    {chamadaAtiva && <div className="social-dm__call-banner"><span>Sua chamada continua em andamento.</span><button type="button" onClick={onAbrirChamada}>Voltar à chamada</button></div>}
     {buscaAberta && <label className="social-search social-chat__search"><SocialIcon name="search" size={18} /><input type="search" aria-label="Buscar nas mensagens carregadas" placeholder="Buscar nas mensagens carregadas" value={busca} onChange={(event) => setBusca(event.target.value)} autoFocus /><span>{filtradas.length} resultados</span></label>}
     <div className="social-chat__history">
       {carregando && <p className="social-feedback" role="status">Carregando conversa…</p>}

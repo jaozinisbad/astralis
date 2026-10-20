@@ -13,12 +13,14 @@
 .social-header__actions { display: flex; align-items: center; gap: 12px; margin-left: auto; flex-shrink: 0; }
 .social-header__actions button { display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--as-muted, #aaa4b8); padding: 4px; border-radius: 4px; }
 .social-header__actions button:hover, .social-header__actions button[aria-pressed="true"] { color: var(--as-text, #f2eff8); }
-.social-friends__tabs { display: flex; gap: 12px; align-items: center; }
+.social-friends__header { height: auto; flex-shrink: 0; flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
+.social-friends__tabs { display: flex; flex-wrap: wrap; min-width: 0; gap: 12px; align-items: center; }
 .social-friends__tabs button { border: 0; border-radius: 4px; padding: 3px 9px; line-height: 1.4; color: var(--as-muted, #aaa4b8); background: transparent; font-size: 15px; font-weight: 550; white-space: nowrap; }
 .social-friends__tabs button:hover { background: #ffffff08; color: var(--as-text, #f2eff8); }
 .social-friends__tabs button[aria-pressed="true"] { background: #ffffff12; color: var(--as-text, #f2eff8); }
 .social-friends__tabs .social-friends__add { background: var(--as-accent, #9270f4); color: #fff; }
 .social-friends__tabs .social-friends__add[aria-pressed="true"] { background: transparent; color: var(--as-accent, #9270f4); }
+.social-friends__badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 4px; border-radius: 10px; background: var(--as-accent, #9270f4); color: #fff; font-size: 11px; }
 .social-friends__layout { min-height: 0; flex: 1; display: flex; }
 .social-friends__main { flex: 1; min-width: 0; padding: 16px 20px 24px 30px; overflow: auto; }
 .social-search { height: 34px; display: flex; align-items: center; gap: 10px; background: var(--as-sidebar, #1d1a24); color: var(--as-muted, #aaa4b8); border-radius: 4px; padding: 0 10px; }
@@ -36,6 +38,11 @@
 .social-friend__info > span { color: var(--as-muted, #aaa4b8); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .social-friend__message { width: 36px; height: 36px; display: grid; place-items: center; flex: none; background: var(--as-sidebar, #1d1a24); border-radius: 50%; color: var(--as-muted, #aaa4b8); }
 .social-friend:hover .social-friend__message { color: var(--as-text, #f2eff8); }
+.social-friends .social-friend__actions { display: flex; gap: 6px; flex: none; }
+.social-friends .social-friend__action { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; flex: none; border: 0; border-radius: 50%; background: var(--as-sidebar, #1d1a24); color: var(--as-muted, #aaa4b8); }
+.social-friends .social-friend__action:hover:not(:disabled) { background: var(--as-panel, #2d2935); color: var(--as-text, #f2eff8); }
+.social-friends .social-friend__action--accept:hover:not(:disabled) { color: #3ba978; }
+.social-friends .social-friend__action--remove:hover:not(:disabled) { color: #f1777f; }
 .social-activity { flex: 0 0 320px; width: 320px; border-left: 1px solid var(--as-border, #ffffff0d); padding: 22px 16px; overflow: auto; }
 .social-activity h2 { font-size: 20px; line-height: 1.25; font-weight: 750; letter-spacing: -.35px; margin: 0 0 18px; }
 .social-activity__description { color: var(--as-muted, #aaa4b8); font-size: 12px; margin: 0 0 12px; }
@@ -61,6 +68,19 @@
 .social-friends__invite-box > svg { color: var(--as-accent, #9270f4); }
 .social-friends__invite-box h2 { font-size: 20px; margin: 18px 0 10px; }
 .social-friends__invite-box p { color: var(--as-muted, #aaa4b8); font-size: 14px; line-height: 1.7; max-width: 510px; margin-bottom: 24px; }
+.social-friends__add-form { margin-top: 28px; }
+.social-friends__add-form > label { display: block; margin-bottom: 10px; font-size: 13px; font-weight: 650; }
+.social-friends__add-input { display: flex; align-items: center; gap: 12px; padding: 8px; border: 1px solid var(--as-border, #ffffff0d); border-radius: 8px; background: var(--as-sidebar, #1d1a24); }
+.social-friends__add-input:focus-within { border-color: var(--as-accent, #9270f4); }
+.social-friends__add-input input { flex: 1; min-width: 0; width: 100%; padding: 10px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--as-text, #f2eff8); }
+.social-friends__add-input input::placeholder { color: var(--as-muted, #aaa4b8); }
+.social-friends__add-input button { flex-shrink: 0; }
+.social-friends__add-form > p, .social-friends__own-code > p, .social-friends__loading { color: var(--as-muted, #aaa4b8); font-size: 13px; line-height: 1.6; }
+.social-friends__own-code { margin-top: 24px; padding: 16px; border-left: 3px solid var(--as-accent, #9270f4); border-radius: 4px; background: var(--as-sidebar, #1d1a24); }
+.social-friends__own-code > span { display: block; color: var(--as-muted, #aaa4b8); font-size: 12px; margin-bottom: 8px; }
+.social-friends__own-code > strong { font-size: 16px; overflow-wrap: anywhere; }
+.social-friends__own-code > p { margin-bottom: 0; }
+.social-friends .social-feedback { overflow-wrap: anywhere; }
 .social-chat__history { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; }
 .social-chat__search { margin: 12px 16px 0; flex-shrink: 0; }
 .social-chat__search > span { white-space: nowrap; font-size: 12px; }
@@ -114,5 +134,7 @@
 .social-dm__presence--online { background: #3ba978; }
 @media (max-width: 1100px) { .social-activity { flex-basis: 260px; width: 260px; } .social-friends__tabs { gap: 6px; } }
 @media (max-width: 950px) { .social-activity { display: none; } }
+@media (max-width: 700px) { .social-friends__add-input { flex-direction: column; align-items: stretch; gap: 6px; } .social-friends__add-input button { white-space: normal; } }
+@media (max-width: 420px) { .social-friends__tabs { gap: 6px 2px; } .social-friends__tabs button { font-size: 13px; padding: 6px; } .social-friends .social-friend { gap: 8px; padding: 10px 4px; } .social-friends .social-friend__actions { gap: 4px; } .social-friends .social-friend__action { width: 32px; height: 36px; } }
 @media (max-width: 600px) { .social-header { gap: 8px; padding: 0 12px; } .social-friends__header { flex-wrap: wrap; height: auto; min-height: 88px; align-content: center; gap: 10px; } .social-friends__header > .social-header__separator { display: none; } .social-friends__tabs { width: 100%; } .social-friends__main { padding: 16px 12px; } .social-friends__empty { min-height: 330px; padding: 20px 12px; } .social-friends__invite-box { padding: 20px; } .social-message { gap: 10px; padding-left: 12px; padding-right: 18px; } .social-message__tools { right: 8px; } .social-composer-wrap { padding: 0 10px; } .social-chat-intro h1 { font-size: 24px; } .social-header__description { display: none; } .social-feedback { flex-wrap: wrap; } }
 @media (hover: none) { .social-message__tools { opacity: 1; pointer-events: auto; position: static; align-self: flex-start; background: transparent; box-shadow: none; border: 0; } .social-message__tools button { padding: 4px; } }

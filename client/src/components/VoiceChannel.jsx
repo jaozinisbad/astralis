@@ -47,7 +47,7 @@ function preferirH264(transceiver) {
 // A mídia permanece conectada durante a navegação; visible controla o palco.
 // O painel lateral usa os mesmos controles e o mesmo estado da chamada.
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { canal, socket, nomeUsuario, usuario, visible = false, onCompartilharTela, onAbrirConfiguracoes, onDesconectar, onEstadoChange },
+  { canal, socket, nomeUsuario, usuario, visible = false, onCompartilharTela, onAbrirConfiguracoes, onDesconectar, onEstadoChange, onAbrirConversa },
   ref
 ) {
   const [participantes, setParticipantes] = useState([]); // [{socketId, nome}]
@@ -585,6 +585,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       setConectando(false);
       setConnectionState('disconnected');
     }
+    function entradaRecusada({ error } = {}) {
+      if (cancelado) return;
+      setConectando(false);
+      setConnectionState('failed');
+      setErro(error || 'Não foi possível entrar na chamada.');
+      streamLocalRef.current?.getTracks().forEach(track => track.stop());
+      streamEnviadaRef.current?.getTracks().forEach(track => track.stop());
+    }
     function reconectado() {
       if (!streamEnviadaRef.current || cancelado) return;
       Object.keys(conexoesRef.current).forEach(fecharConexao);
@@ -594,6 +602,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       socket.emit('entrar-canal-voz', canal.id);
     }
     socket.on('disconnect', desconectado);
+    socket.on('voz:erro', entradaRecusada);
     socket.on('connect', reconectado);
 
     iniciar();
@@ -610,6 +619,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       socket.off('peer-saiu');
       socket.off('tela-parada');
       socket.off('disconnect', desconectado);
+      socket.off('voz:erro', entradaRecusada);
       socket.off('connect', reconectado);
 
       Object.keys(conexoesRef.current).forEach(fecharConexao);
@@ -933,6 +943,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     onAlternarMic={alternarMudo} onAlternarAudio={alternarAudio}
     onCompartilharTela={onCompartilharTela} onPararCompartilhamento={pararCompartilhamento}
     onDesconectar={onDesconectar} onAbrirConfiguracoes={onAbrirConfiguracoes}
+    onAbrirConversa={onAbrirConversa}
     onSelecionarTela={alternarTransmissao} onFecharTela={() => setTelaSelecionadaId(null)}
     onTelaCheia={abrirTelaCheia} onMutarTela={alternarMuteTela} onVolumeTela={alterarVolumeTela}
   />;

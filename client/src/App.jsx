@@ -24,6 +24,9 @@ import { emitirSolicitacaoSala } from './roomSocket.mjs';
 import HomeSidebar, { WorkspaceIcon } from './components/HomeSidebar.jsx';
 import DesktopTitlebar from './components/DesktopTitlebar.jsx';
 import { applyInterfacePreferences, useInterfacePreferences } from './interfacePreferences.mjs';
+import { useFriends } from './useFriends.mjs';
+import { useDirectCall } from './useDirectCall.mjs';
+import DirectCallNotice from './components/DirectCallNotice.jsx';
 
 export default function App() {
   const [interfacePreferences] = useInterfacePreferences();
@@ -107,12 +110,31 @@ function AppContent() {
   const [pickerTelaAberto, setPickerTelaAberto] = useState(false);
   const [pickerContexto, setPickerContexto] = useState('call');
 
-  // view: 'servidor' | 'amigos' | 'dm'
+  // view: 'servidor' | 'amigos' | 'dm' | 'chamada-direta'
   const [view, setView] = useState(() => activeRoom
     || new URLSearchParams(globalThis.window?.location?.search || '').get('view') === 'salas'
     ? 'salas' : 'amigos');
-  const [amigos, setAmigos] = useState([]);
   const [dmAtiva, setDmAtiva] = useState(null); // amigo com quem está conversando
+  const friendships = useFriends(sessao?.token, socket);
+  const { amigos } = friendships;
+  const directCall = useDirectCall({
+    socket, usuarioId: sessao?.usuario.id,
+    onActive(call) {
+      const friend = String(call.caller.id) === String(sessao?.usuario.id) ? call.callee : call.caller;
+      if (activeRoom) fecharSala();
+      setDmAtiva({ ...friend, online: true });
+      setCanalDeVoz({ id: call.canalId, tipo: 'voz', nome: friend.nome, direta: true, callId: call.id, amigo: friend });
+      setMobileNavigationOpen(false);
+      setView('chamada-direta');
+    },
+    onEnded(callId) {
+      setCanalDeVoz(current => current?.callId === callId ? null : current);
+      setVozEstado(current => ({ ...current, telasAtivas: [], compartilhandoTela: false, telaSelecionadaId: null }));
+      setPickerTelaAberto(false);
+      setView(current => current === 'chamada-direta' ? 'dm' : current);
+    },
+  });
+  const dmAtual = amigos.find(friend => String(friend.id) === String(dmAtiva?.id)) || dmAtiva;
 
   useEffect(() => {
     const settings = () => setSettingsAberto(true);
@@ -187,31 +209,16 @@ function AppContent() {
     return () => { ativo = false; };
   }, [sessao, tentativaServidores]);
 
-  // Carrega a lista de amigos assim que loga.
-  useEffect(() => {
-    if (!sessao) return;
-    let ativo = true;
-    apiFetch('/api/amigos', sessao.token)
-      .then((lista) => { if (ativo) setAmigos(lista); })
-      .catch(() => {});
-    return () => { ativo = false; };
-  }, [sessao]);
-
   // Atualiza a lista de amigos em tempo real quando alguém fica online/offline
   // (sem precisar recarregar tudo do zero a cada evento).
   useEffect(() => {
     if (!socket) return;
-    function online({ usuarioId }) {
-      setAmigos((atual) => atual.map((a) => (a.id === usuarioId ? { ...a, online: true } : a)));
-    }
     function offline({ usuarioId }) {
-      setAmigos((atual) => atual.map((a) => (a.id === usuarioId ? { ...a, online: false } : a)));
       setMembrosServidor((atual) => atual.map((m) => (m.id === usuarioId ? { ...m, online: false } : m)));
     }
     function membroOnline({ usuarioId }) {
       setMembrosServidor((atual) => atual.map((m) => (m.id === usuarioId ? { ...m, online: true } : m)));
     }
-    socket.on('amigo-online', online);
     socket.on('amigo-offline', offline);
     socket.on('amigo-online', membroOnline);
 
@@ -226,7 +233,6 @@ function AppContent() {
     socket.on('voce-foi-expulso-da-call', aoSerExpulsoDaCall);
 
     return () => {
-      socket.off('amigo-online', online);
       socket.off('amigo-offline', offline);
       socket.off('amigo-online', membroOnline);
       socket.off('presenca-voz-canal', aoAtualizarPresencaVoz);
@@ -326,7 +332,6 @@ function AppContent() {
     setCriacaoCanal(null);
     setPickerTelaAberto(false);
     setModalAberto(false);
-    setAmigos([]);
     setDmAtiva(null);
     setGuestLoginOpen(false);
     setMobileNavigationOpen(false);
@@ -379,8 +384,6 @@ function AppContent() {
     setServidores(lista);
     setServidorAtivoId(servidor.id);
     setView('servidor');
-    // A pessoa dona do servidor virou um novo amigo (compartilham servidor agora).
-    apiFetch('/api/amigos', sessao.token).then(setAmigos).catch(() => {});
   }
 
   async function salvarPerfil(dados) {
@@ -441,6 +444,10 @@ function AppContent() {
   }
 
   function selecionarCanal(canal) {
+    if (canal.tipo === 'voz' && (directCall.call || directCall.pending)) {
+      directCall.reportError('Encerre sua chamada privada antes de entrar em um canal de voz.');
+      return;
+    }
     fecharVisualizacaoTransmissao();
     setMobileNavigationOpen(false);
     setCanalAtivo(canal);
@@ -453,6 +460,7 @@ function AppContent() {
   }
 
   function desconectarVoz() {
+    directCall.end();
     fecharVisualizacaoTransmissao();
     if (pickerContexto === 'call') setPickerTelaAberto(false);
     setCanalDeVoz(null);
@@ -462,6 +470,12 @@ function AppContent() {
   function abrirChamada() {
     if (!canalDeVoz) return;
     if (activeRoom) fecharSala();
+    if (canalDeVoz.direta) {
+      setDmAtiva(canalDeVoz.amigo);
+      setMobileNavigationOpen(false);
+      setView('chamada-direta');
+      return;
+    }
     if (servidorAtivoId !== canalDeVoz.servidorId) {
       canalRetornoRef.current = canalDeVoz;
       setServidorAtivoId(canalDeVoz.servidorId);
@@ -656,6 +670,13 @@ function AppContent() {
     setView('dm');
   }
 
+  function ligarParaAmigo(amigo) {
+    if (!sessao) { setGuestLoginOpen(true); return; }
+    if (canalDeVoz?.direta && String(canalDeVoz.amigo.id) === String(amigo.id)) { abrirChamada(); return; }
+    abrirDM(amigo);
+    void directCall.start(amigo);
+  }
+
   const servidorAtivo = servidores.find((s) => s.id === servidorAtivoId);
   const aguardandoCanais = canaisCarregando || (servidorAtivo && canaisServidorId !== servidorAtivoId);
   const usuarioLogado = sessao ? {
@@ -670,7 +691,7 @@ function AppContent() {
 
   useEffect(() => {
     const title = view === 'servidor' ? servidorAtivo?.nome || 'Servidores'
-      : view === 'dm' ? dmAtiva?.nome || 'Mensagens diretas'
+      : view === 'dm' || view === 'chamada-direta' ? dmAtiva?.nome || 'Mensagens diretas'
         : view === 'amigos' ? 'Amigos' : 'Salas de tela';
     window.dispatchEvent(new CustomEvent('astralis:navigation', { detail: title }));
   }, [view, servidorAtivo?.nome, dmAtiva?.nome]);
@@ -704,13 +725,13 @@ function AppContent() {
 
   return (
     <div className="astralis-workspace" data-mobile-panel={mobileNavigationOpen ? 'navigation' : undefined}>
-      <div className="mobile-nav"><button type="button" aria-label="Abrir navegação" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen((open) => !open)}><WorkspaceIcon name="menu"/></button><strong>{view === 'servidor' ? servidorAtivo?.nome || 'Servidores' : view === 'dm' ? dmAtiva?.nome : view === 'amigos' ? 'Amigos' : 'Salas de tela'}</strong><button type="button" aria-label="Configurações de usuário" onClick={() => setSettingsAberto(true)}><WorkspaceIcon name="settings"/></button></div>
+      <div className="mobile-nav"><button type="button" aria-label="Abrir navegação" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen((open) => !open)}><WorkspaceIcon name="menu"/></button><strong>{view === 'servidor' ? servidorAtivo?.nome || 'Servidores' : view === 'dm' || view === 'chamada-direta' ? dmAtiva?.nome : view === 'amigos' ? 'Amigos' : 'Salas de tela'}</strong><button type="button" aria-label="Configurações de usuário" onClick={() => setSettingsAberto(true)}><WorkspaceIcon name="settings"/></button></div>
       <div className={`app${vozEstado.telaSelecionadaId ? ' app--transmissao-aberta' : ''}`}>
       {mobileNavigationOpen && <button type="button" className="workspace-mobile-backdrop" aria-label="Fechar navegação" onClick={() => setMobileNavigationOpen(false)}/>}
       <ServerSidebar
         servidores={servidores}
         servidorAtivoId={servidorAtivoId}
-        viewAtiva={view === 'dm' ? 'amigos' : view}
+        viewAtiva={view === 'dm' || view === 'chamada-direta' ? 'amigos' : view}
         onSelecionar={selecionarServidor}
         onAbrirAmigos={abrirAmigos}
         onAbrirSalas={view === 'salas' ? abrirSalas : undefined}
@@ -864,10 +885,17 @@ function AppContent() {
         </div>
       )}
 
-      {view === 'amigos' && <FriendsScreen amigos={amigos} onAbrirDM={abrirDM} onAdicionarAmigos={abrirCriacaoServidor} onEntrarNaConta={!sessao ? () => setGuestLoginOpen(true) : undefined} />}
+      {view === 'amigos' && <FriendsScreen amigos={amigos} pedidos={friendships.pedidos} meuUsuario={sessao?.usuario}
+        carregando={friendships.carregando} erro={friendships.erro} onTentarNovamente={friendships.refresh}
+        onAbrirDM={abrirDM} onAdicionarAmigo={friendships.adicionar} onAceitarPedido={friendships.aceitar}
+        onRecusarPedido={friendships.recusar} onRemoverAmigo={friendships.remover} onLigar={ligarParaAmigo}
+        onEntrarNaConta={!sessao ? () => setGuestLoginOpen(true) : undefined} />}
 
       {view === 'dm' && dmAtiva && sessao && (
-        <DirectMessageScreen amigo={dmAtiva} socket={socket} token={sessao.token} meuId={sessao.usuario.id} meuUsuario={sessao.usuario} />
+        <DirectMessageScreen amigo={dmAtual} socket={socket} token={sessao.token} meuId={sessao.usuario.id} meuUsuario={sessao.usuario}
+          onLigar={() => ligarParaAmigo(dmAtual)} ligacaoPendente={directCall.pending || Boolean(directCall.call)}
+          chamadaAtiva={Boolean(canalDeVoz?.direta && String(canalDeVoz.amigo.id) === String(dmAtiva.id))}
+          onAbrirChamada={abrirChamada} />
       )}
 
       {canalDeVoz && sessao && (
@@ -878,13 +906,21 @@ function AppContent() {
           socket={socket}
           nomeUsuario={sessao.usuario.nome}
           usuario={usuarioLogado}
-          visible={view === 'servidor' && canalAtivo?.id === canalDeVoz.id}
+          visible={canalDeVoz.direta ? view === 'chamada-direta' : view === 'servidor' && canalAtivo?.id === canalDeVoz.id}
+          onAbrirConversa={canalDeVoz.direta ? () => abrirDM(canalDeVoz.amigo) : undefined}
           onCompartilharTela={abrirSeletorDaChamada}
           onAbrirConfiguracoes={() => { setSettingsInitialSection('voice'); setSettingsAberto(true); }}
           onDesconectar={desconectarVoz}
           onEstadoChange={setVozEstado}
         />
       )}
+
+      {directCall.call?.status === 'ringing' && <DirectCallNotice
+        call={directCall.call} incoming={directCall.incoming} pending={directCall.pending}
+        error={directCall.error} onAccept={directCall.accept} onEnd={directCall.end} />}
+      {directCall.error && directCall.call?.status !== 'ringing' && <div className="direct-call-feedback" role="alert">
+        <span>{directCall.error}</span><button type="button" onClick={directCall.clearError} aria-label="Fechar aviso de chamada">×</button>
+      </div>}
 
       {modalAberto && sessao && (
         <AddServerModal

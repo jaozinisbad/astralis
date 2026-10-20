@@ -3,8 +3,9 @@ import Avatar from './Avatar.jsx';
 import { getVoicePanelStatus } from './VoiceConnectionPanel.jsx';
 import './VoiceCallStage.css';
 
-function CallIcon({ name, size = 24 }) {
+export function CallIcon({ name, size = 24 }) {
   const icons = {
+    phone: <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.8 2.1Z" />,
     voice: <><path d="m11 5-6 4H2v6h3l6 4V5Z" /><path d="M16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14" /></>,
     mic: <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>,
     micOff: <><path d="m2 2 20 20M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.8-1M5 10v2a7 7 0 0 0 12 4.9M19 12v-2M12 19v3M8 22h8" /></>,
@@ -25,7 +26,7 @@ export default function VoiceCallStage({ canal, participantes, socketId, micMudo
   compartilhandoTela, streamSelecionada, telaSelecionadaId, telaLocalSelecionada, participanteSelecionado,
   telasRemotas, telaTileRef, emTelaCheia, telasMutadas, volumesTelas,
   onAlternarMic, onAlternarAudio, onCompartilharTela, onPararCompartilhamento, onDesconectar, onAbrirConfiguracoes,
-  onSelecionarTela, onFecharTela, onTelaCheia, onMutarTela, onVolumeTela }) {
+  onSelecionarTela, onFecharTela, onTelaCheia, onMutarTela, onVolumeTela, onAbrirConversa }) {
   const menuRef = useRef(null);
   const connection = getVoicePanelStatus({ connectionState, conectando, erro });
   const status = connection.label;
@@ -45,7 +46,7 @@ export default function VoiceCallStage({ canal, participantes, socketId, micMudo
     </article>;
   }
   return <section className="content voice-call-panel voice-call-panel--active voice-stage" aria-label={`Chamada de voz ${canal.nome}`}>
-    <header className="voice-stage__header"><CallIcon name="voice" size={22} /><h1>{canal.nome}</h1><span className="voice-stage__header-divider" /><span className="voice-stage__people">{participantes.length} {participantes.length === 1 ? 'participante' : 'participantes'}</span>{streamSelecionada && <button type="button" className="voice-stage__back" onClick={onFecharTela}>Voltar aos participantes</button>}</header>
+    <header className="voice-stage__header"><CallIcon name="voice" size={22} /><h1>{canal.nome}</h1><span className="voice-stage__header-divider" /><span className="voice-stage__people">{participantes.length} {participantes.length === 1 ? 'participante' : 'participantes'}</span>{onAbrirConversa && <button type="button" className="voice-stage__back" onClick={onAbrirConversa}>Ver conversa</button>}{streamSelecionada && <button type="button" className="voice-stage__back" onClick={onFecharTela}>Voltar aos participantes</button>}</header>
     <div className="voice-stage__body">
       <div className={`voice-stage__connection${connection.id === 'failed' ? ' voice-stage__connection--error' : connection.id === 'connecting' ? ' voice-stage__connection--pending' : ''}`} role={erro ? 'alert' : 'status'}><span />{status}{erro && onAbrirConfiguracoes && <button type="button" onClick={onAbrirConfiguracoes}>Configurações de voz</button>}</div>
       {erro && <p className="voice-stage__error" role="alert">{erro}</p>}

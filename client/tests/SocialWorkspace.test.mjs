@@ -67,13 +67,15 @@ test('amigos filtra online/todos e busca; abrir conversa usa a pessoa real', asy
   assert.deepEqual(opened, [3]);
 });
 
-test('adicionar amigo explica contrato de servidor e encaminha ação sem criar dados falsos', async () => {
-  let opened = 0;
-  await mount(FriendsScreen, { amigos: [], onAdicionarAmigos: () => opened++ });
+test('adicionar amigo envia pedido pelo nome sem depender de servidor', async () => {
+  const requests = [];
+  await mount(FriendsScreen, { amigos: [], onAdicionarAmigo: async (nome) => requests.push(nome) });
   await act(async () => button('Adicionar amigo').props.onClick());
-  assert.match(text(), /compartilham um servidor/);
-  await act(async () => button('Criar ou entrar em servidor').props.onClick());
-  assert.equal(opened, 1);
+  await act(async () => root.root.findByProps({ id: 'friend-name' }).props.onChange({ target: { value: '  Ana  ' } }));
+  await act(async () => root.root.findByType('form').props.onSubmit({ preventDefault() {} }));
+  assert.deepEqual(requests, ['Ana']);
+  assert.match(text(), /Pedido de amizade enviado/);
+  assert.equal(root.root.findByProps({ id: 'friend-name' }).props.value, '');
 });
 
 test('falha no histórico permanece visível e pode ser tentada novamente', async () => {

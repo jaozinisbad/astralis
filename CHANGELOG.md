@@ -1,5 +1,15 @@
 # Histórico de versões
 
+## [1.7.0] - 2026-10-20
+
+- Pedidos de amizade pelo nome exato ou código, com aceitar, recusar, cancelar e remover.
+- Amigos e mensagens diretas funcionam entre contas sem servidor em comum.
+- Chamadas privadas pelo telefone da lista ou da conversa, com aceite, recusa, cancelamento, ocupado e convite expirando em 30 segundos.
+- Os dois participantes podem compartilhar tela usando o monitor da chamada e continuar conectados ao abrir a conversa.
+- Encerrar, desconectar ou remover a amizade libera áudio e captura nas duas pontas; outras abas não herdam a chamada.
+- Migração aditiva de amizades no PostgreSQL durante a inicialização do servidor. Conversas anteriores de membros de servidores continuam autorizadas.
+- Download e instalação de atualizações continuam manuais.
+
 ## [1.6.0] - 2026-10-19
 
 ### Melhorias

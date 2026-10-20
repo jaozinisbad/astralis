@@ -57,7 +57,7 @@ export default function HomeSidebar({ view, amigos = [], servidores = [], canais
       </button>)}
       {search && servidores.filter((server) => matches(server.nome)).map((server) => <button type="button" className="home-sidebar__dm" key={`server-${server.id}`} onClick={() => choose(() => onServidor(server.id))}><span className="home-sidebar__result-icon">{server.nome.slice(0, 2)}</span><span>{server.nome}<small>Servidor</small></span></button>)}
       {search && canais.filter((channel) => matches(channel.nome)).map((channel) => <button type="button" className="home-sidebar__dm" key={`channel-${channel.id}`} onClick={() => choose(() => onCanal(channel))}><span className="home-sidebar__result-icon">#</span><span>{channel.nome}<small>Canal</small></span></button>)}
-      {!amigos.length && !search && <p className="home-sidebar__empty">Suas conversas aparecem aqui. Encontre sua turma em um servidor.</p>}
+      {!amigos.length && !search && <p className="home-sidebar__empty">Adicione amigos para conversar e ligar sem precisar de um servidor.</p>}
       {search && ![...amigos, ...servidores, ...canais].some((item) => matches(item.nome)) && <p className="home-sidebar__empty" role="status">Nenhum resultado para “{query}”.</p>}
     </div>
     {!usuario && <div className="home-sidebar__guest"><strong>Seu espaço começa aqui.</strong><p>Entre para conversar e criar servidores.</p><button type="button" onClick={onPerfil}>Entrar no Astralis</button></div>}

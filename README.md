@@ -4,7 +4,7 @@
 
 <h1 align="center">Astralis</h1>
 
-<p align="center">Reúna seus amigos em servidores, converse por texto e voz e compartilhe sua tela.</p>
+<p align="center">Converse, ligue e compartilhe sua tela com amigos, em chamadas privadas ou servidores.</p>
 
 <p align="center">
   <a href="https://astralis-b2w.pages.dev">Abrir no navegador</a> ·
@@ -13,7 +13,7 @@
 
 ## O que é o Astralis
 
-Astralis é um aplicativo para conversar com amigos em servidores e canais de texto e voz. A versão **1.6.0**, de **19/10/2026**, traz uma interface com identidade roxa, tela de chamada com participantes, mensagens diretas e compartilhamento de tela iniciado dentro da chamada.
+Astralis é um aplicativo para conversar com amigos por texto e voz. A versão **1.7.0**, de **20/10/2026**, adiciona pedidos de amizade e chamadas privadas com compartilhamento de tela, sem precisar entrar em um servidor.
 
 O aplicativo usa contas e serviços próprios do Astralis. Os temas Claro, Escuro e Meia-noite e as preferências de aparência, acessibilidade, chat e áudio podem ser ajustados nas configurações.
 
@@ -24,8 +24,8 @@ O aplicativo usa contas e serviços próprios do Astralis. Os temas Claro, Escur
 1. Abra o [site do Astralis](https://astralis-b2w.pages.dev) e clique em **Baixar para Windows**. O site encontra o instalador da versão estável mais recente e inicia o download diretamente.
 2. Execute o instalador `Astralis-Setup-<versão>.exe` e abra o Astralis.
 3. Entre na sua conta ou use **Criar conta** na tela de entrada.
-4. Use o botão **+** na barra de servidores para criar um servidor ou **Entrar com convite** usando o código recebido.
-5. Selecione um canal de texto para conversar ou um canal de voz para entrar na chamada.
+4. Abra **Amigos → Adicionar amigo** e envie um pedido pelo nome exato ou código `nome#ID`. Seu próprio código aparece nessa tela.
+5. Depois do aceite em **Pendentes**, abra a conversa e use o botão de telefone para ligar. Também é possível criar ou entrar em um servidor pelo botão **+** da barra lateral.
 
 O aplicativo consulta novas versões ao iniciar e enquanto permanece aberto. Quando houver uma atualização, clique em **Baixar atualização** para iniciar o download e acompanhar o progresso. Depois, clique em **Reiniciar e instalar** quando puder interromper o uso. Fechar ou reabrir o Astralis não instala a atualização automaticamente; você pode adiar sem sair da conta. Se houver uma falha, o aviso permite tentar novamente a etapa que falhou. Você também pode atualizar pelo instalador da release mais recente.
 
@@ -37,8 +37,9 @@ O compartilhamento depende do suporte de captura do navegador. No iPhone e no An
 
 ## Amigos, servidores e conversas
 
-- **Amigos:** abra o ícone Astralis no topo da barra lateral. As pessoas que compartilham um servidor com você aparecem nessa lista; use **Online**, **Todos** e a busca para encontrá-las.
+- **Amigos:** abra o ícone Astralis no topo da barra lateral. Use **Adicionar amigo** para enviar um pedido pelo nome exato ou código `nome#ID` / `#ID`. Em **Pendentes**, aceite ou recuse pedidos recebidos, ou cancele os enviados. Só pedidos aceitos entram nas listas **Online** e **Todos**.
 - **Mensagens diretas:** selecione uma pessoa em Amigos ou uma conversa na lista lateral para abrir o chat privado.
+- **Chamadas privadas:** use o telefone na lista ou na conversa. A outra pessoa pode **Atender** ou **Recusar**; quem ligou pode **Cancelar**. Convites sem resposta expiram após 30 segundos. Uma chamada ocupa as duas contas, inclusive em outras abas.
 - **Servidores:** selecione o ícone do servidor na barra lateral. O botão **+** permite criar um servidor ou entrar pelo código de convite.
 - **Canais:** os canais de texto e de voz ficam agrupados dentro do servidor. As opções de criação, convite, cargos e membros dependem das suas permissões.
 
@@ -46,7 +47,7 @@ Para convidar alguém, abra o menu do servidor e use **Convidar para o servidor*
 
 ## Entrar na chamada e compartilhar tela
 
-1. Abra um servidor e selecione um **canal de voz**. Se aparecer **Conectar à voz**, clique nesse botão e permita o microfone. Aguarde o painel indicar **Voz conectada**.
+1. Ligue para um amigo e aguarde o aceite, ou abra um **canal de voz** dentro de um servidor. Permita o microfone quando solicitado e aguarde o painel indicar **Voz conectada**.
 2. Na tela da chamada, clique no **monitor** da barra inferior. Você também pode usar **Compartilhar tela** no painel de voz inferior esquerdo.
 3. No Windows, escolha uma janela em **Aplicativos** ou um monitor em **Telas** e clique em **Avançar**. No navegador, selecione **Escolher no navegador** e avance; a escolha final da tela, janela ou aba será feita pelo próprio navegador depois da confirmação.
 4. Confira a fonte, o canal, a qualidade e a opção **Compartilhar áudio**.
@@ -56,6 +57,8 @@ Para convidar alguém, abra o menu do servidor e use **Convidar para o servidor*
 A tela da chamada mostra os participantes e identifica quem está **AO VIVO**. Clique em **Assistir** para abrir uma transmissão; o player oferece volume, silêncio, tela cheia e retorno aos participantes. Sua própria transmissão pode ser aberta por **Ver sua tela**.
 
 Enquanto transmite, use **Trocar fonte de compartilhamento** no painel de voz ou **Trocar tela ou janela** no menu ao lado do monitor. A captura anterior é encerrada quando a nova fonte começa. Os controles de microfone, áudio e desconexão ficam na barra inferior da chamada. Abrir Amigos ou uma mensagem direta mantém a chamada; clique no nome do canal no painel de voz para voltar a ela. **Desconectar da chamada** encerra a conexão de voz e a sua transmissão.
+
+Na chamada privada, **Ver conversa** retorna ao chat mantendo a voz e a transmissão. Use **Voltar à chamada** para abrir o palco novamente. Desligar, perder a conexão ou remover a amizade encerra a chamada nas duas pontas. O microfone só é solicitado depois do aceite; compartilhar tela exige uma ação separada.
 
 ### Qualidade e áudio
 
