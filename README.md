@@ -26,7 +26,7 @@ As salas são focadas no conteúdo compartilhado: não têm chamada de voz nem c
 3. Abra o Astralis e entre na sua conta, ou crie uma conta na tela de cadastro.
 4. Crie uma sala ou entre na sala de um amigo.
 
-O aplicativo verifica atualizações ao iniciar e avisa quando uma atualização está pronta para instalar. Você também pode atualizar pelo instalador da release mais recente.
+O aplicativo verifica novas versões ao iniciar e periodicamente, mas só baixa a atualização quando você clica em **Baixar atualização** no aviso dentro do Astralis. Você pode acompanhar o progresso e tentar novamente se houver um erro. Quando estiver pronta, clique em **Reiniciar e instalar** para aplicar a atualização; essa ação encerra o uso atual e reabre o aplicativo. Você pode adiar e continuar usando normalmente: fechar o Astralis não instala a atualização. Você também pode atualizar pelo instalador da release mais recente.
 
 ### No navegador e no celular
 

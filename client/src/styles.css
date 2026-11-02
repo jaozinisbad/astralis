@@ -145,36 +145,6 @@ button, input, textarea, select {
   font-size: 10px;
 }
 
-.atualizacao-banner {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: #248046;
-  color: #fff;
-  font-size: 13px;
-}
-
-.atualizacao-banner--erro {
-  background: #9b3636;
-}
-
-.atualizacao-banner button {
-  background: #fff;
-  color: #248046;
-  border: none;
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
 .versao-watermark {
   position: fixed;
   right: 10px;
@@ -2211,7 +2181,6 @@ button, input, textarea, select {
 .chat-anexo-botao:hover { color: var(--mint); background: rgba(141,231,219,.08); }
 .chat-mensagem__apagar { border-radius: 6px; }
 .chat-mensagem__apagar:hover { color: #ff9aa9; background: rgba(255,102,134,.11); }
-.atualizacao-banner { background: linear-gradient(90deg,#6253c7,#348d8e); }
 .versao-watermark { border-color: rgba(191,199,255,.12); border-radius: 999px; background: rgba(10,12,23,.78); }
 
 /* Entrada: apresentação ampla no desktop e formulário compacto no mobile */
