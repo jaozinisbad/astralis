@@ -11,7 +11,8 @@ export default function DirectCallNotice({ call, incoming, pending, error, onAcc
   const ref = useDialogFocus(onEnd);
   const friend = incoming ? call.caller : call.callee;
   const name = preferences.streamerMode ? 'Amigo' : friend.nome;
-  const notify = useSocialNotifications(preferences);
+  // The call hook owns its repeating ringtone; keep only the desktop notice.
+  const notify = useSocialNotifications({ ...preferences, notificationSound: false });
   useEffect(() => {
     if (incoming) notify(name, 'Está ligando para você no Astralis.');
   }, [call.id]);

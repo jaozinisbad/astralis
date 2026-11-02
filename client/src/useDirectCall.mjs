@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createDirectCallRingtone } from './directCallRingtone.mjs';
 
 const END_MESSAGES = {
   declined: 'A chamada foi recusada.',
@@ -34,12 +35,21 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
   callbacks.current = { onActive, onEnded };
   const closed = useRef(new Set());
   const mounted = useRef(false);
+  const ringtone = useRef(null);
+  const accepting = useRef(null);
+
+  function syncRingtone(next) {
+    if (next?.status === 'ringing' && accepting.current !== next.id) {
+      ringtone.current?.start(next.id, String(next.callee.id) === String(usuarioId) ? 'incoming' : 'outgoing');
+    } else ringtone.current?.stop();
+  }
 
   function receive(next) {
     if (!mounted.current || !next?.id || closed.current.has(next.id)) return;
     if (current.current && current.current.id !== next.id) return;
     if (current.current?.status === 'active' && next.status !== 'active') return;
     const becameActive = next.status === 'active' && current.current?.status !== 'active';
+    syncRingtone(next);
     current.current = next; setCall(next); setError('');
     if (becameActive) callbacks.current.onActive?.(next);
   }
@@ -47,6 +57,7 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
     closed.current.add(callId);
     if (closed.current.size > 100) closed.current.delete(closed.current.values().next().value);
     if (current.current?.id !== callId) return;
+    ringtone.current?.stop(); accepting.current = null;
     current.current = null; setCall(null);
     operation.current++; busy.current = false; setPending(false);
     setError(END_MESSAGES[reason] || '');
@@ -55,8 +66,10 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
 
   useEffect(() => {
     mounted.current = true;
+    ringtone.current = createDirectCallRingtone();
+    accepting.current = null;
     current.current = null; setCall(null); setError(''); setPending(false); busy.current = false;
-    if (!socket || !usuarioId) return () => { mounted.current = false; operation.current++; };
+    if (!socket || !usuarioId) return () => { mounted.current = false; operation.current++; ringtone.current?.dispose(); ringtone.current = null; };
     const state = ({ call: next } = {}) => receive(next);
     const ended = ({ callId, reason } = {}) => finish(callId, reason);
     const disconnect = () => { if (current.current) finish(current.current.id, 'disconnected'); operation.current++; busy.current = false; setPending(false); };
@@ -64,6 +77,7 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
     socket.on('chamada:encerrada', ended); socket.on('disconnect', disconnect);
     return () => {
       mounted.current = false; operation.current++; busy.current = false;
+      ringtone.current?.dispose(); ringtone.current = null; accepting.current = null;
       socket.off('chamada:recebida', state); socket.off('chamada:estado', state);
       socket.off('chamada:encerrada', ended); socket.off('disconnect', disconnect);
       if (current.current) callbacks.current.onEnded?.(current.current.id);
@@ -97,13 +111,32 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
       if (mounted.current && !current.current && cause.code !== 'not-found') setError(cause.message);
     });
   }
+  async function accept() {
+    const active = current.current;
+    if (!active || busy.current) return;
+    accepting.current = active.id;
+    ringtone.current?.stop();
+    const request = act('chamada:aceitar', { callId: active.id });
+    const sequence = operation.current;
+    try { return await request; }
+    finally {
+      if (mounted.current && sequence === operation.current) {
+        if (accepting.current === active.id) accepting.current = null;
+        if (current.current?.id === active.id) syncRingtone(current.current);
+      }
+    }
+  }
   return {
     call, error, pending,
     incoming: Boolean(call && String(call.callee.id) === String(usuarioId)),
     clearError: () => setError(''),
     reportError: setError,
-    start: friend => current.current ? undefined : act('chamada:iniciar', { paraUsuarioId: friend.id }),
-    accept: () => current.current && act('chamada:aceitar', { callId: current.current.id }),
+    start: friend => {
+      if (current.current) return;
+      ringtone.current?.unlock();
+      return act('chamada:iniciar', { paraUsuarioId: friend.id });
+    },
+    accept,
     end,
   };
 }
