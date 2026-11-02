@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="orbit" x1="18" y1="47" x2="109" y2="88" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#72DFF0"/>
+      <stop offset=".54" stop-color="#9CA8FF"/>
+      <stop offset="1" stop-color="#D8A8FF"/>
+    </linearGradient>
+    <linearGradient id="star" x1="43" y1="19" x2="89" y2="68" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F2F5FF"/>
+      <stop offset=".44" stop-color="#9EBCFF"/>
+      <stop offset="1" stop-color="#7DE5E3"/>
+    </linearGradient>
+    <linearGradient id="smallStar" x1="25" y1="64" x2="49" y2="90" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C8F2FF"/>
+      <stop offset="1" stop-color="#83BFFF"/>
+    </linearGradient>
+    <linearGradient id="violetStar" x1="76" y1="69" x2="101" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F3E5FF"/>
+      <stop offset="1" stop-color="#B49BFF"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <ellipse cx="64" cy="64" rx="47" ry="28" transform="rotate(-28 64 64)" stroke="url(#orbit)" stroke-width="2.2" opacity=".82"/>
+  <circle cx="104" cy="42" r="3.5" fill="#D6D6FF" filter="url(#glow)"/>
+  <path d="M64 14C66.3 36.2 68.3 38.3 90.5 40.5C68.3 42.7 66.3 44.8 64 67C61.7 44.8 59.7 42.7 37.5 40.5C59.7 38.3 61.7 36.2 64 14Z" fill="url(#star)" filter="url(#glow)"/>
+  <path d="M34 62C35.4 75.3 36.7 76.6 50 78C36.7 79.4 35.4 80.7 34 94C32.6 80.7 31.3 79.4 18 78C31.3 76.6 32.6 75.3 34 62Z" fill="url(#smallStar)"/>
+  <path d="M88 66C89.3 78.2 90.8 79.7 103 81C90.8 82.3 89.3 83.8 88 96C86.7 83.8 85.2 82.3 73 81C85.2 79.7 86.7 78.2 88 66Z" fill="url(#violetStar)"/>
+</svg>
