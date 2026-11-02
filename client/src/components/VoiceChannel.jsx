@@ -387,7 +387,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             audio = new Audio();
             audio.autoplay = true;
             audio.muted = ehAudioDeTela
-              ? audioMudoRef.current || telasMutadasRef.current.has(socketId) || telaSelecionadaRef.current !== socketId
+              ? telasMutadasRef.current.has(socketId) || telaSelecionadaRef.current !== socketId
               : audioMudoRef.current;
             const volumeSaida = (configuracaoAudioRef.current.volumeSaida ?? 100) / 100;
             audio.volume = ehAudioDeTela
@@ -657,7 +657,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     Object.values(audiosRef.current).forEach((audio) => {
       audio.muted = novoEstado;
     });
-    sincronizarAudioDasTelas();
     setAudioMudo(novoEstado);
   }
 
@@ -868,7 +867,6 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   function sincronizarAudioDasTelas() {
     sincronizarReproducaoDasTelas(audiosTelaRef.current, {
-      audioMudo: audioMudoRef.current,
       telasMutadas: telasMutadasRef.current,
       telaSelecionadaId: telaSelecionadaRef.current,
     });

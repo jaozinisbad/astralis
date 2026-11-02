@@ -20,7 +20,7 @@ test('o áudio da transmissão só toca enquanto ela está aberta', () => {
   assert.equal(audios.amiga.muted, true);
 });
 
-test('silenciar a chamada ou uma transmissão mantém seu áudio desligado ao reabrir', () => {
+test('o mute próprio da transmissão persiste e o deafen da voz não silencia a tela', () => {
   const audios = { amiga: { muted: false } };
   const estado = { audioMudo: false, telasMutadas: new Set(), telaSelecionadaId: 'amiga' };
 
@@ -31,9 +31,17 @@ test('silenciar a chamada ou uma transmissão mantém seu áudio desligado ao re
   estado.telasMutadas.clear();
   estado.audioMudo = true;
   sincronizarReproducaoDasTelas(audios, estado);
+  assert.equal(audios.amiga.muted, false);
+
+  estado.telasMutadas.add('amiga');
+  sincronizarReproducaoDasTelas(audios, estado);
   assert.equal(audios.amiga.muted, true);
 
   estado.audioMudo = false;
+  sincronizarReproducaoDasTelas(audios, estado);
+  assert.equal(audios.amiga.muted, true);
+
+  estado.telasMutadas.clear();
   sincronizarReproducaoDasTelas(audios, estado);
   assert.equal(audios.amiga.muted, false);
 });

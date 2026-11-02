@@ -1,5 +1,6 @@
-export function sincronizarReproducaoDasTelas(audios, { audioMudo, telasMutadas, telaSelecionadaId }) {
+export function sincronizarReproducaoDasTelas(audios, { telasMutadas, telaSelecionadaId }) {
+  // O deafen da voz não controla o áudio próprio da transmissão.
   Object.entries(audios).forEach(([socketId, audio]) => {
-    audio.muted = audioMudo || telasMutadas.has(socketId) || telaSelecionadaId !== socketId;
+    audio.muted = telasMutadas.has(socketId) || telaSelecionadaId !== socketId;
   });
 }
