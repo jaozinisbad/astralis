@@ -28,3 +28,7 @@ client/release-*/
 
 # Artefatos locais de verificação visual
 .playwright-mcp/
+
+# Site independente, salvo em branch própria (ver docs/RESTAURAR-2026-11-02.md)
+/astralis-download-site/
+/astralis-download-site-deploy.tar.gz
