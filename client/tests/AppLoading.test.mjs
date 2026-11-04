@@ -15,6 +15,7 @@ let vite;
 let App;
 let raiz;
 let chamadasFetch;
+let chamadasSocket;
 
 function pluginDeStubs() {
   return {
@@ -28,7 +29,7 @@ function pluginDeStubs() {
     },
     load(id) {
       if (id === '\0socket.io-client-test-stub') {
-        return `export const io = () => ({ connected: true, on() {}, off() {}, once() {}, disconnect() {},
+        return `export const io = () => (globalThis.window.socketConnections.push(true), { connected: true, on() {}, off() {}, once() {}, disconnect() {},
           emit(evento, dados, callback) {
             if (evento === 'salas:entrar' && dados?.accessCode === 'ABCD2345' && !dados.roomId) {
               callback({ ok: true, room: { id: 'room-from-code', name: 'Sala pelo código', visibility: 'private' },
@@ -53,6 +54,7 @@ function pluginDeStubs() {
               'data-channels': JSON.stringify(props.canais) });
           }`;
       }
+      if (nome === 'LoginScreen') return `import React from 'react'; export default function LoginScreen(props) { return React.createElement('main', { 'data-login': true }, React.createElement('button', { 'data-login-submit': true, onClick: () => props.onAutenticado('token-teste', { id: 'user-1', nome: 'Jogador' }) }, 'Entrar')); }`;
       if (nome === 'RoomLobby') {
         return `import React from 'react';
           export default function RoomLobby(props) {
@@ -131,6 +133,8 @@ function prepararAplicacao({ comSessao = true, busca = '?view=salas' } = {}) {
   globalThis.window.history = { replaceState() {} };
   globalThis.window.electronAPI = undefined;
   chamadasFetch = [];
+  chamadasSocket = [];
+  globalThis.window.socketConnections = chamadasSocket;
   globalThis.fetch = (url) => {
     const caminho = new URL(url).pathname;
     chamadasFetch.push(caminho);
@@ -191,23 +195,26 @@ test('mantém o lobby acessível se a lista antiga de servidores falhar', async 
   assert.ok(raiz.root.findAllByType('nav').length >= 1);
 });
 
-test('abre uma sala por link no navegador sem exigir uma sessão', async () => {
-  prepararAplicacao({ comSessao: false, busca: '?room=room-public' });
+test('sem conta exige login na entrada normal e nos links de sala', async () => {
+  prepararAplicacao({ comSessao: false, busca: '' });
   await renderizar();
-  const streamRoom = raiz.root.findByProps({ 'data-stream-room': 'room-public' });
-  assert.equal(streamRoom.props['data-stream-role'], 'viewer');
-  assert.equal(chamadasFetch.length, 0);
+  assert.equal(raiz.root.findAllByProps({ 'data-login': true }).length, 1);
+  assert.equal(raiz.root.findAllByType('nav').length, 0);
 });
 
-test('espectador sem conta consegue abrir o seletor para compartilhar tela', async () => {
-  prepararAplicacao({ comSessao: false, busca: '?room=room-public' });
+test('convite exige login e abre a sala somente depois de autenticar', async () => {
+  prepararAplicacao({ comSessao: false, busca: '?room=room-public&code=ABCD2345' });
   await renderizar();
-  await act(async () => raiz.root.findByProps({ 'data-request-share': 'true' }).props.onClick());
-  assert.equal(raiz.root.findAllByProps({ 'data-screen-share-picker': 'true' }).length, 1);
+  assert.equal(raiz.root.findAllByProps({ 'data-stream-room': 'room-public' }).length, 0);
+  assert.equal(raiz.root.findAllByProps({ 'data-login': true }).length, 1);
+  assert.equal(chamadasFetch.length, 0);
+  assert.equal(chamadasSocket.length, 0);
+  await act(async () => raiz.root.findByProps({ 'data-login-submit': true }).props.onClick());
+  assert.equal(raiz.root.findByProps({ 'data-stream-room': 'room-public' }).props['data-stream-role'], 'viewer');
 });
 
 test('entra na sala privada pelo código e reutiliza a entrada confirmada pelo servidor', async () => {
-  prepararAplicacao({ comSessao: false });
+  prepararAplicacao();
   await renderizar();
 
   let entrada;
@@ -226,6 +233,6 @@ test('sessão salva é descartada quando a API de servidores retorna 401', async
   await renderizar();
   await act(async () => api.rejeitar('/api/servidores', 401, 'Sessão expirada'));
   assert.equal(raiz.root.findAllByProps({ 'data-room-lobby': 'true' }).length, 0);
-  assert.equal(raiz.root.findAllByProps({ 'aria-label': 'Entrar na conta' }).length, 1);
-  assert.ok(raiz.root.findAllByType('nav').length >= 1);
+  assert.equal(raiz.root.findAllByProps({ 'data-login': true }).length, 1);
+  assert.equal(raiz.root.findAllByType('nav').length, 0);
 });

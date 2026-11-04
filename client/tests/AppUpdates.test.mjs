@@ -88,10 +88,10 @@ function banner() { return renderer.root.findByProps({ 'aria-label': 'Atualizaç
 
 for (const loggedIn of [false, true]) {
   for (const room of [false, true]) {
-    test(`the real update banner remains available for ${loggedIn ? 'authenticated' : 'guest'} ${room ? 'stream' : 'lobby'} without changing saved data`, async () => {
+    test(`the real update banner remains available for ${loggedIn ? 'authenticated' : 'guest'} ${!loggedIn ? 'login' : room ? 'stream' : 'lobby'} without changing saved data`, async () => {
       const h = prepare({ loggedIn, room });
       await mount();
-      assert.equal(renderer.root.findByProps({ 'data-current-screen': room ? 'stream' : 'lobby' }).type, 'main');
+      assert.equal(renderer.root.findByProps({ 'data-current-screen': !loggedIn ? 'login' : room ? 'stream' : 'lobby' }).type, 'main');
       assert.equal(banner().findByType('button').children.join(''), 'Baixar atualização');
       assert.deepEqual(h.calls, { download: 0, install: 0, check: 0, snapshot: 1 });
       await act(async () => h.emit({ status: 'downloaded', version: '9.8.7' }));
@@ -104,10 +104,9 @@ for (const loggedIn of [false, true]) {
   }
 }
 
-test('the update banner survives navigation from guest lobby to login without resetting subscription or storage', async () => {
+test('the update banner remains available on required login without resetting subscription or storage', async () => {
   const h = prepare();
   await mount();
-  await act(async () => renderer.root.findAllByType('button').find((node) => node.children.join('') === 'Entrar na conta').props.onClick());
   assert.ok(renderer.root.findByProps({ 'data-current-screen': 'login' }));
   assert.equal(h.calls.snapshot, 1);
   assert.equal(h.listeners.size, 1);

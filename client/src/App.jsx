@@ -43,11 +43,13 @@ export default function App() {
 function AppContent() {
   const [sessao, setSessao] = useState(() => {
     const salvo = localStorage.getItem('sessao');
-    return salvo ? JSON.parse(salvo) : null;
+    try {
+      const saved = salvo ? JSON.parse(salvo) : null;
+      return saved?.token && saved?.usuario?.id ? saved : null;
+    } catch { return null; }
   });
   const [status, setStatus] = useState('conectando...');
   const [socket, setSocket] = useState(null);
-  const [guestLoginOpen, setGuestLoginOpen] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [membrosVisiveis, setMembrosVisiveis] = useState(true);
   const [activeRoom, setActiveRoom] = useState(() => {
@@ -168,10 +170,11 @@ function AppContent() {
     return () => window.removeEventListener('sessao-invalida', aoInvalidarSessao);
   }, []);
 
-  // Conecta o socket para os anfitriões autenticados e espectadores sem conta.
+  // Conecta somente contas autenticadas.
   useEffect(() => {
+    if (!sessao) return;
     const s = io(SERVER_URL, {
-      auth: sessao ? { token: sessao.token } : { modo: 'espectador' },
+      auth: { token: sessao.token },
       // Faz o ngrok (plano grátis) pular a página de aviso de navegador.
       // Inofensivo em outros túneis/hosts, que simplesmente ignoram o header.
       extraHeaders: { 'ngrok-skip-browser-warning': 'true' },
@@ -306,7 +309,7 @@ function AppContent() {
     setServidoresCarregando(true);
     setErroServidores('');
     setSessao(novaSessao);
-    setGuestLoginOpen(false);
+
     setView(activeRoom ? 'salas' : 'amigos');
   }
 
@@ -333,7 +336,7 @@ function AppContent() {
     setPickerTelaAberto(false);
     setModalAberto(false);
     setDmAtiva(null);
-    setGuestLoginOpen(false);
+
     setMobileNavigationOpen(false);
     setView('amigos');
   }
@@ -599,7 +602,7 @@ function AppContent() {
 
   async function criarSala(dados) {
     if (!socket || !sessao) {
-      setGuestLoginOpen(true);
+
       return { ok: false, error: 'Entre na sua conta para criar uma sala.' };
     }
     const resposta = await emitirSolicitacaoSala(socket, 'salas:criar', dados);
@@ -662,7 +665,7 @@ function AppContent() {
   }
 
   function abrirDM(amigo) {
-    if (!sessao) { setGuestLoginOpen(true); return; }
+    if (!sessao) return;
     if (activeRoom) fecharSala();
     fecharVisualizacaoTransmissao();
     setMobileNavigationOpen(false);
@@ -671,7 +674,7 @@ function AppContent() {
   }
 
   function ligarParaAmigo(amigo) {
-    if (!sessao) { setGuestLoginOpen(true); return; }
+    if (!sessao) return;
     if (canalDeVoz?.direta && String(canalDeVoz.amigo.id) === String(amigo.id)) { abrirChamada(); return; }
     abrirDM(amigo);
     void directCall.start(amigo);
@@ -702,11 +705,11 @@ function AppContent() {
     setMobileNavigationOpen(false);
   }
   function abrirCriacaoServidor() {
-    if (!sessao) { setGuestLoginOpen(true); return; }
+    if (!sessao) return;
     setModalAberto(true);
   }
   function abrirMeuPerfil() {
-    if (!sessao) { setGuestLoginOpen(true); return; }
+    if (!sessao) return;
     setPerfilAberto(true);
   }
 
@@ -722,6 +725,8 @@ function AppContent() {
       });
     }
   });
+
+  if (!sessao) return <LoginScreen onAutenticado={autenticar} />;
 
   return (
     <div className="astralis-workspace" data-mobile-panel={mobileNavigationOpen ? 'navigation' : undefined}>
@@ -755,7 +760,6 @@ function AppContent() {
           onOpenSettings={abrirSeletorDaSala} onExit={fecharSala}
         /> : <RoomLobby socket={socket} usuario={usuarioLogado}
           onCriar={criarSala} onEntrar={abrirSala} onAbrirPerfil={abrirMeuPerfil}
-          onEntrarNaConta={!sessao ? () => setGuestLoginOpen(true) : undefined}
         />}
         {captureError && <p className="rooms-toast" role="alert">{captureError}</p>}
       </section>}
@@ -889,7 +893,7 @@ function AppContent() {
         carregando={friendships.carregando} erro={friendships.erro} onTentarNovamente={friendships.refresh}
         onAbrirDM={abrirDM} onAdicionarAmigo={friendships.adicionar} onAceitarPedido={friendships.aceitar}
         onRecusarPedido={friendships.recusar} onRemoverAmigo={friendships.remover} onLigar={ligarParaAmigo}
-        onEntrarNaConta={!sessao ? () => setGuestLoginOpen(true) : undefined} />}
+        />}
 
       {view === 'dm' && dmAtiva && sessao && (
         <DirectMessageScreen amigo={dmAtual} socket={socket} token={sessao.token} meuId={sessao.usuario.id} meuUsuario={sessao.usuario}
@@ -981,10 +985,7 @@ function AppContent() {
           onSelecionar={handleCompartilharTela}
         />
       )}
-      {!sessao && guestLoginOpen && <div className="workspace-login" role="dialog" aria-modal="true" aria-label="Entrar no Astralis">
-        <button type="button" className="workspace-login__close" onClick={() => setGuestLoginOpen(false)} aria-label="Fechar login">×</button>
-        <LoginScreen onAutenticado={autenticar}/>
-      </div>}
+
       </div>
     </div>
   );

@@ -8,7 +8,7 @@ import { createServer } from 'vite';
 let vite;
 let App;
 let renderer;
-const original = Object.fromEntries(['window', 'navigator', 'localStorage'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+const original = Object.fromEntries(['window', 'navigator', 'localStorage', 'fetch'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 
 function boundaryStubs() {
   return {
@@ -68,7 +68,8 @@ async function mount() {
   windowValue.history = { replaceState() {} };
   const values = {
     window: windowValue,
-    localStorage: { getItem: () => null },
+    localStorage: { getItem: key => key === 'sessao' ? JSON.stringify({ token: 'test-token', usuario: { id: 1, nome: 'Tester' } }) : null },
+    fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
     navigator: { mediaDevices: { getDisplayMedia: () => new Promise((resolve) => pending.push(resolve)) } },
   };
   for (const [key, value] of Object.entries(values)) Object.defineProperty(globalThis, key, { configurable: true, value });

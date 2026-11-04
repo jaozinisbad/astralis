@@ -170,23 +170,13 @@ test('health expõe apenas a disponibilidade da configuração TURN validada, se
   }
 });
 
-test('espectador anônimo recebe apenas handlers de sala, sem chat, DM ou voz', () => {
+test('conexao sem conta e desconectada sem registrar handlers', () => {
   const servidor = criarServidor();
+  let disconnected = false;
   const handlers = {};
-  const visitante = {
-    id: 'espectador', espectadorAnonimo: true,
-    on: (evento, callback) => { handlers[evento] = callback; },
-    join() {}, leave() {}, emit() {},
-  };
-  servidor.io.sockets.sockets.set(visitante.id, visitante);
-
-  servidor.conectar(visitante);
-
-  assert.equal(typeof handlers['salas:listar'], 'function');
-  assert.equal(typeof handlers['salas:entrar'], 'function');
-  assert.equal(handlers['enviar-mensagem'], undefined);
-  assert.equal(handlers['enviar-dm'], undefined);
-  assert.equal(handlers['entrar-canal-voz'], undefined);
+  servidor.conectar({ id: 'anonymous', on: (event, callback) => { handlers[event] = callback; }, disconnect: () => { disconnected = true; } });
+  assert.equal(disconnected, true);
+  assert.deepEqual(handlers, {});
 });
 
 test('disconnect do anfitrião pelo wiring preserva a sala durante a janela de reconexão', async () => {
@@ -195,7 +185,7 @@ test('disconnect do anfitrião pelo wiring preserva a sala durante a janela de r
   const viewerListeners = new Map();
   const viewerRooms = new Set();
   const visitante = {
-    id: 'espectador', espectadorAnonimo: true, rooms: viewerRooms,
+    id: 'espectador', usuario: { id: 99, nome: 'Viewer' }, rooms: viewerRooms,
     on: (evento, callback) => {
       viewerHandlers[evento] = callback;
       if (!viewerListeners.has(evento)) viewerListeners.set(evento, []);

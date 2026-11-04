@@ -2,10 +2,7 @@ function createSocketAuthMiddleware({ verifyToken, getSessionVersion }) {
   return (socket, next) => {
     const auth = socket.handshake?.auth || {};
     const token = auth.token;
-    if (!token && auth.modo === 'espectador') {
-      socket.espectadorAnonimo = true;
-      return next();
-    }
+
     if (!token) return next(new Error('Token não fornecido.'));
 
     verifyToken(token, (erro, payload) => {

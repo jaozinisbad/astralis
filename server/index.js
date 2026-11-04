@@ -165,8 +165,8 @@ eventosConta.on('senha-redefinida', (usuarioId, versaoSessao) => {
 });
 
 io.on('connection', (socket) => {
-  if (socket.espectadorAnonimo) {
-    registerStreamRoomEvents({ socket, io, manager: streamRoomManager });
+  if (!socket.usuario?.id) {
+    socket.disconnect(true);
     return;
   }
 

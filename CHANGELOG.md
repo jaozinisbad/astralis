@@ -1,5 +1,12 @@
 # Histórico de versões
 
+## [1.7.1] - 2026-11-04
+
+- Login ou cadastro obrigatório no aplicativo e na versão web, inclusive para convites de salas.
+- Conexões de espectadores sem autenticação são rejeitadas pelo servidor.
+- Convites abertos antes do login são preservados até a autenticação; sessões válidas continuam conectadas.
+- Inclui as correções restauradas do backup: toque repetido em chamadas privadas e áudio da transmissão independente do silêncio da voz.
+
 ## [1.7.0] - 2026-10-20
 
 - Pedidos de amizade pelo nome exato ou código, com aceitar, recusar, cancelar e remover.

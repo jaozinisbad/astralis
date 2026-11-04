@@ -35,6 +35,8 @@ Abra [astralis-b2w.pages.dev](https://astralis-b2w.pages.dev) para usar a versã
 
 O compartilhamento depende do suporte de captura do navegador. No iPhone e no Android, o uso é voltado a acompanhar o conteúdo disponível; para transmitir a tela, use o aplicativo Windows ou um navegador de computador compatível. Os links antigos de salas continuam oferecendo o acesso de espectadores descrito abaixo.
 
+Para usar o Astralis, tanto no aplicativo quanto no navegador, entre na sua conta ou crie uma. Convites de sala tamb?m exigem login; uma sess?o v?lida salva neste dispositivo permite continuar conectado.
+
 ## Amigos, servidores e conversas
 
 - **Amigos:** abra o ícone Astralis no topo da barra lateral. Use **Adicionar amigo** para enviar um pedido pelo nome exato ou código `nome#ID` / `#ID`. Em **Pendentes**, aceite ou recuse pedidos recebidos, ou cancele os enviados. Só pedidos aceitos entram nas listas **Online** e **Todos**.
@@ -80,7 +82,7 @@ Abra **Configurações de usuário** pela engrenagem da barra inferior. Em **Apa
 
 ## Links e salas de tela anteriores
 
-Os convites de salas anteriores continuam funcionando. Abra o link recebido ou o [acesso às salas](https://astralis-b2w.pages.dev/?view=salas). Esse recurso mantém o fluxo anterior de salas públicas e privadas, espectadores visitantes e reprodução sincronizada do YouTube; a navegação principal da nova interface usa Amigos, servidores e canais.
+Os convites de salas anteriores continuam funcionando. Abra o link recebido ou o [acesso às salas](https://astralis-b2w.pages.dev/?view=salas). Esse recurso mantém o fluxo anterior de salas públicas e privadas, espectadores autenticados e reprodução sincronizada do YouTube; a navegação principal da nova interface usa Amigos, servidores e canais.
 
 Na área de salas, você pode criar uma sala ao entrar na sua conta ou usar **Entrar com código de convite**. Salas privadas exigem o código; o link de convite pode incluir esse código, portanto compartilhe-o somente com quem você deseja convidar. Somente salas públicas com transmissão de tela ativa aparecem na lista pública. O anfitrião pode encerrar a sala para todos; os demais participantes podem sair individualmente.
 

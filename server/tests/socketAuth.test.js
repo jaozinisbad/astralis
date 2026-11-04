@@ -14,7 +14,7 @@ function executar(middleware, conexao) {
   return new Promise((resolve) => middleware(conexao, (erro) => resolve(erro || null)));
 }
 
-test('socket auth: visitante sem token recebe apenas identidade de espectador', async () => {
+test('socket auth: visitante sem token e rejeitado mesmo no modo espectador', async () => {
   let verificouToken = false;
   const middleware = middlewareDeTeste({
     verifyToken: () => { verificouToken = true; },
@@ -22,8 +22,8 @@ test('socket auth: visitante sem token recebe apenas identidade de espectador', 
   const visitante = socket({ modo: 'espectador' });
 
   const erro = await executar(middleware, visitante);
-  assert.equal(erro, null);
-  assert.equal(visitante.espectadorAnonimo, true);
+  assert.ok(erro);
+  assert.equal(visitante.espectadorAnonimo, undefined);
   assert.equal(visitante.usuario, undefined);
   assert.equal(verificouToken, false);
 });
