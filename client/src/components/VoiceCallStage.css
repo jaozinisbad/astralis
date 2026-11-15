@@ -71,4 +71,51 @@
 .voice-participant--compact .voice-participant__watch > span:last-child { display: none; }
 .voice-stage button:focus-visible, .voice-stage summary:focus-visible { outline: 2px solid var(--as-accent, #9270f4); outline-offset: 3px; }
 [data-streamer-mode="true"] .voice-participant__name { filter: blur(5px); }
+
+.direct-call-workspace { min-height: 0; overflow: hidden; }
+.direct-call-workspace > .social-dm { min-height: 0; }
+.direct-call-workspace__stage { display: flex; flex: 0 0 clamp(218px, 51%, 560px); min-height: 0; border-bottom: 1px solid var(--as-border, #ffffff0d); }
+.direct-call-workspace__stage:empty { display: none; }
+.direct-call-workspace__stage .voice-stage__header { height: 40px; min-height: 40px; }
+.direct-call-workspace__stage .voice-stage__grid { padding: 0; max-width: 740px; }
+.direct-call-workspace__stage .voice-participant { min-height: 106px; max-height: 190px; }
+.direct-call-workspace__stage .voice-stage__footer { padding: 7px 12px 10px; }
+.direct-call-workspace__stage .voice-stage__control,
+.direct-call-workspace__stage .voice-stage__share-menu summary { height: 39px; }
+.direct-call-workspace__stage .voice-stage__control { min-width: 43px; }
+.direct-call-workspace__stage .voice-stage__control--disconnect { min-width: 60px; }
+.direct-call-workspace__stage .voice-stage__footer-hint { display: none; }
+.direct-call-workspace__stage .voice-stage .voice-stage__stream { min-height: 0; }
+.direct-call-workspace--showing-stage .social-dm > .social-header { height: 37px; min-height: 37px; }
+
+.voice-stage--watching { background: #09090d; }
+.voice-stage--watching .voice-stage__body { padding-top: 5px; }
+.voice-stage--watching .voice-stage__connection:not(.voice-stage__connection--error):not(.voice-stage__connection--pending) { position: absolute; width: 1px; height: 1px; min-height: 0; overflow: hidden; clip-path: inset(50%); }
+.voice-stage__stream-badges { position: absolute; top: 10px; right: 10px; display: flex; align-items: center; gap: 3px; }
+.voice-stage__resolution { padding: 3px 5px; border-radius: 3px; background: #272731dd; color: #fff; font-size: 10px; font-weight: 700; line-height: 1; }
+.voice-stage--watching .voice-stage__stream-label { max-width: 35%; }
+.voice-stage--watching .voice-stage__stream-controls { inset: auto 10px 10px auto; }
+.voice-stage__grid--server:not(.voice-stage__grid--alone) { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 1080px; }
+.voice-stage__grid--server > .voice-participant { width: 100%; min-height: 0; }
+@media (max-width: 520px) {
+  .voice-stage__grid--server:not(.voice-stage__grid--alone) { grid-template-columns: minmax(0, 1fr); }
+}
+.voice-stage__live-tile {
+  position: relative;
+  overflow: hidden;
+  display: block;
+  min-width: 0;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  border: 1px solid var(--as-border, #ffffff14);
+  border-radius: 10px;
+  background: #09090d;
+  color: #fff;
+  cursor: pointer;
+}
+.voice-stage__live-tile:hover { border-color: var(--as-accent, #9270f4); }
+.voice-stage__live-tile > video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.voice-stage__live-tile > .voice-live-badge { position: absolute; right: 9px; top: 9px; }
+.voice-stage__live-tile > .voice-participant__name { position: absolute; left: 9px; bottom: 9px; padding: 4px 7px; border-radius: 5px; background: #000b; max-width: calc(100% - 18px); }
 @media (max-width: 700px) { .voice-stage__body { padding: 12px 12px 0; } .voice-stage__header { gap: 8px; padding: 0 12px; } .voice-stage__people { display: none; } .voice-stage__header-divider { display: none; } .voice-stage__back { font-size: 11px; padding: 6px; } .voice-stage__grid { gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); } .voice-participant { min-height: 160px; } .voice-stage__controls { gap: 8px; } .voice-stage__control { height: 46px; min-width: 46px; } .voice-stage__share-menu summary { height: 46px; } .voice-stage__settings { display: none; } .voice-stage__control--disconnect { min-width: 58px; } .voice-stage__footer { padding: 14px 10px 10px; } .voice-participant--compact { min-height: 90px; width: 140px; flex-basis: 140px; } .voice-stage__filmstrip { justify-content: flex-start; } }

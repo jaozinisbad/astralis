@@ -90,6 +90,7 @@ function AppContent() {
   const [cargosServidor, setCargosServidor] = useState([]);
   const [canalAtivo, setCanalAtivo] = useState(null);
   const [canalDeVoz, setCanalDeVoz] = useState(null);
+  const [palcoPrivado, setPalcoPrivado] = useState(null);
   const canalRetornoRef = useRef(null);
   const [vozEstado, setVozEstado] = useState({
     participantes: [],
@@ -97,6 +98,7 @@ function AppContent() {
     audioMudo: false,
     compartilhandoTela: false,
     telasAtivas: [],
+    streams: {},
     telaSelecionadaId: null,
     erro: '',
     erroCompartilhamento: '',
@@ -131,7 +133,7 @@ function AppContent() {
     },
     onEnded(callId) {
       setCanalDeVoz(current => current?.callId === callId ? null : current);
-      setVozEstado(current => ({ ...current, telasAtivas: [], compartilhandoTela: false, telaSelecionadaId: null }));
+      setVozEstado(current => ({ ...current, telasAtivas: [], streams: {}, compartilhandoTela: false, telaSelecionadaId: null }));
       setPickerTelaAberto(false);
       setView(current => current === 'chamada-direta' ? 'dm' : current);
     },
@@ -451,7 +453,6 @@ function AppContent() {
       directCall.reportError('Encerre sua chamada privada antes de entrar em um canal de voz.');
       return;
     }
-    fecharVisualizacaoTransmissao();
     setMobileNavigationOpen(false);
     setCanalAtivo(canal);
     if (canal.tipo === 'voz') setCanalDeVoz({ ...canal, servidorId: servidorAtivoId, servidorNome: servidores.find((item) => item.id === servidorAtivoId)?.nome });
@@ -467,7 +468,7 @@ function AppContent() {
     fecharVisualizacaoTransmissao();
     if (pickerContexto === 'call') setPickerTelaAberto(false);
     setCanalDeVoz(null);
-    setVozEstado((atual) => ({ ...atual, telasAtivas: [], compartilhandoTela: false }));
+    setVozEstado((atual) => ({ ...atual, telasAtivas: [], streams: {}, compartilhandoTela: false }));
   }
 
   function abrirChamada() {
@@ -486,6 +487,11 @@ function AppContent() {
     setCanalAtivo(canalDeVoz);
     setMobileNavigationOpen(false);
     setView('servidor');
+  }
+
+  function assistirTransmissao(socketId) {
+    abrirChamada();
+    voiceChannelRef.current?.abrirTransmissao(socketId);
   }
 
   function abrirSeletorDaChamada() {
@@ -651,7 +657,6 @@ function AppContent() {
 
   function selecionarServidor(id) {
     if (activeRoom) fecharSala();
-    fecharVisualizacaoTransmissao();
     setMobileNavigationOpen(false);
     setServidorAtivoId(id);
     setView('servidor');
@@ -659,7 +664,6 @@ function AppContent() {
 
   function abrirAmigos() {
     if (activeRoom) fecharSala();
-    fecharVisualizacaoTransmissao();
     setMobileNavigationOpen(false);
     setView('amigos');
   }
@@ -667,7 +671,6 @@ function AppContent() {
   function abrirDM(amigo) {
     if (!sessao) return;
     if (activeRoom) fecharSala();
-    fecharVisualizacaoTransmissao();
     setMobileNavigationOpen(false);
     setDmAtiva(amigo);
     setView('dm');
@@ -700,7 +703,6 @@ function AppContent() {
   }, [view, servidorAtivo?.nome, dmAtiva?.nome]);
 
   function abrirSalas() {
-    fecharVisualizacaoTransmissao();
     setView('salas');
     setMobileNavigationOpen(false);
   }
@@ -731,7 +733,7 @@ function AppContent() {
   return (
     <div className="astralis-workspace" data-mobile-panel={mobileNavigationOpen ? 'navigation' : undefined}>
       <div className="mobile-nav"><button type="button" aria-label="Abrir navegação" aria-expanded={mobileNavigationOpen} onClick={() => setMobileNavigationOpen((open) => !open)}><WorkspaceIcon name="menu"/></button><strong>{view === 'servidor' ? servidorAtivo?.nome || 'Servidores' : view === 'dm' || view === 'chamada-direta' ? dmAtiva?.nome : view === 'amigos' ? 'Amigos' : 'Salas de tela'}</strong><button type="button" aria-label="Configurações de usuário" onClick={() => setSettingsAberto(true)}><WorkspaceIcon name="settings"/></button></div>
-      <div className={`app${vozEstado.telaSelecionadaId ? ' app--transmissao-aberta' : ''}`}>
+      <div className="app">
       {mobileNavigationOpen && <button type="button" className="workspace-mobile-backdrop" aria-label="Fechar navegação" onClick={() => setMobileNavigationOpen(false)}/>}
       <ServerSidebar
         servidores={servidores}
@@ -748,7 +750,8 @@ function AppContent() {
         dmAtiva={dmAtiva} usuario={usuarioLogado} onAmigos={abrirAmigos} onSalas={abrirSalas}
         onDM={abrirDM} onServidor={selecionarServidor} onCanal={(channel) => { if (activeRoom) fecharSala(); setView('servidor'); selecionarCanal(channel); setMobileNavigationOpen(false); }}
         onPerfil={abrirMeuPerfil} onSettings={() => setSettingsAberto(true)}
-        voice={vozEstado} voiceChannel={canalDeVoz} voiceActions={canalDeVoz ? vozAcoes : null} connected={status === 'conectado ao servidor'}
+        voice={vozEstado} voiceChannel={canalDeVoz} voiceActions={canalDeVoz ? vozAcoes : null}
+        onAssistirTransmissao={assistirTransmissao} connected={status === 'conectado ao servidor'}
       />}
 
       {view === 'salas' && <section className="workspace-rooms" aria-label="Salas de tela">
@@ -788,7 +791,7 @@ function AppContent() {
             onCriarCanal={(tipo) => setCriacaoCanal({ tipo, servidorId: servidorAtivoId })}
             onApagarCanal={apagarCanal}
             onExpulsarDaCall={expulsarDaCall}
-            onAssistirTransmissao={(socketId) => { abrirChamada(); voiceChannelRef.current?.alternarTransmissao(socketId); }}
+            onAssistirTransmissao={assistirTransmissao}
           />
       )}
       {view === 'servidor' && !servidoresCarregando && !erroServidores && !aguardandoCanais && !erroCanais && servidorAtivo && canalAtivo?.tipo === 'texto' && sessao && (
@@ -895,11 +898,14 @@ function AppContent() {
         onRecusarPedido={friendships.recusar} onRemoverAmigo={friendships.remover} onLigar={ligarParaAmigo}
         />}
 
-      {view === 'dm' && dmAtiva && sessao && (
-        <DirectMessageScreen amigo={dmAtual} socket={socket} token={sessao.token} meuId={sessao.usuario.id} meuUsuario={sessao.usuario}
-          onLigar={() => ligarParaAmigo(dmAtual)} ligacaoPendente={directCall.pending || Boolean(directCall.call)}
-          chamadaAtiva={Boolean(canalDeVoz?.direta && String(canalDeVoz.amigo.id) === String(dmAtiva.id))}
-          onAbrirChamada={abrirChamada} />
+      {(view === 'dm' || view === 'chamada-direta') && dmAtiva && sessao && (
+        <div className={`content direct-call-workspace${view === 'chamada-direta' ? ' direct-call-workspace--showing-stage' : ''}`}>
+          {view === 'chamada-direta' && <div className="direct-call-workspace__stage" ref={setPalcoPrivado} />}
+          <DirectMessageScreen amigo={dmAtual} socket={socket} token={sessao.token} meuId={sessao.usuario.id} meuUsuario={sessao.usuario}
+            onLigar={() => ligarParaAmigo(dmAtual)} ligacaoPendente={directCall.pending || Boolean(directCall.call)}
+            chamadaAtiva={view === 'dm' && Boolean(canalDeVoz?.direta && String(canalDeVoz.amigo.id) === String(dmAtiva.id))}
+            onAbrirChamada={abrirChamada} />
+        </div>
       )}
 
       {canalDeVoz && sessao && (
@@ -911,6 +917,8 @@ function AppContent() {
           nomeUsuario={sessao.usuario.nome}
           usuario={usuarioLogado}
           visible={canalDeVoz.direta ? view === 'chamada-direta' : view === 'servidor' && canalAtivo?.id === canalDeVoz.id}
+          stageContainer={canalDeVoz.direta ? palcoPrivado : undefined}
+          onAbrirChamada={abrirChamada}
           onAbrirConversa={canalDeVoz.direta ? () => abrirDM(canalDeVoz.amigo) : undefined}
           onCompartilharTela={abrirSeletorDaChamada}
           onAbrirConfiguracoes={() => { setSettingsInitialSection('voice'); setSettingsAberto(true); }}

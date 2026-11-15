@@ -173,7 +173,7 @@ test('voice preview keeps its MediaStream attached across unrelated renders', as
   const track = { kind: 'video', getSettings: () => ({ height: 1080 }), stop() {} };
   const stream = { getTracks: () => [track], getVideoTracks: () => [track], getAudioTracks: () => [] };
   const values = {
-    window: {}, document: { addEventListener() {}, removeEventListener() {} },
+    window: { addEventListener() {}, removeEventListener() {} }, document: { addEventListener() {}, removeEventListener() {} },
     localStorage: { getItem: () => null },
     navigator: { mediaDevices: {
       getUserMedia: async () => { throw Object.assign(new Error('No microphone in preview test'), { name: 'NotFoundError' }); },
@@ -203,6 +203,7 @@ test('voice preview keeps its MediaStream attached across unrelated renders', as
     await act(async () => ref.current.alternarTransmissao('self'));
     assert.equal(renderer.root.findAllByType('video').length, 1);
     assert.deepEqual(assignments, [stream]);
+    assert.ok(renderer.root.findByProps({ 'aria-label': 'Mini-player da transmissão' }));
 
     for (let index = 0; index < 6; index += 1) {
       await act(async () => renderer.update(render(`Voz ${index}`)));
@@ -215,7 +216,7 @@ test('voice preview keeps its MediaStream attached across unrelated renders', as
     await act(async () => ref.current.iniciarCompartilhamento({ stream: replacement, shareAudio: false }));
     await act(async () => ref.current.alternarTransmissao('self'));
     await act(async () => renderer.update(render('Nova transmissão')));
-    assert.deepEqual(assignments, [stream, replacement], 'starting another capture must attach the replacement once');
+    assert.deepEqual(assignments, [stream, null, replacement], 'closing detaches the old capture and attaches the replacement once');
     assert.equal(renderer.root.findByType('video').props.muted, true);
   } finally {
     if (renderer) await act(async () => renderer.unmount());

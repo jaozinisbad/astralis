@@ -1,8 +1,12 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
-import { getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
+import { getCaptureConstraints, getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
+import { resolveVideoCodecPreferences } from '../streamCodecs.mjs';
+import { withScreenStartBitrate } from '../streamStartup.mjs';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from '../screenCapture.mjs';
 import VoiceCallStage from './VoiceCallStage.jsx';
+import VoiceMiniPlayer from './VoiceMiniPlayer.jsx';
 
 // Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
 // a descobrirem como se alcançar através da internet (NAT traversal).
@@ -19,35 +23,11 @@ const BITRATE_AUDIO = 128_000;
 // ainda que a voz, já que costuma ter mais variação de frequência.
 const BITRATE_AUDIO_TELA = 128_000;
 
-// O WebRTC não deixa escolher "use o NVENC" diretamente — quem decide
-// usar a placa de vídeo pra codificar é o próprio Chromium, por baixo
-// dos panos. O que dá pra fazer é aumentar bastante a chance disso
-// acontecer: o H264 é o codec que o Chromium consegue acelerar por
-// hardware (via NVENC em GPUs NVIDIA); o VP8, escolha padrão do WebRTC,
-// normalmente roda só por software. Então priorizamos H264 ao
-// compartilhar tela.
-function preferirH264(transceiver) {
-  if (!transceiver || typeof transceiver.setCodecPreferences !== 'function') return;
-  if (typeof RTCRtpSender === 'undefined' || !RTCRtpSender.getCapabilities) return;
-
-  const capacidades = RTCRtpSender.getCapabilities('video');
-  if (!capacidades) return;
-
-  const h264 = capacidades.codecs.filter((c) => c.mimeType.toLowerCase() === 'video/h264');
-  const outros = capacidades.codecs.filter((c) => c.mimeType.toLowerCase() !== 'video/h264');
-  if (h264.length === 0) return;
-
-  try {
-    transceiver.setCodecPreferences([...h264, ...outros]);
-  } catch (err) {
-    // Se falhar por qualquer motivo, segue com o codec padrão — não é crítico.
-  }
-}
-
 // A mídia permanece conectada durante a navegação; visible controla o palco.
 // O painel lateral usa os mesmos controles e o mesmo estado da chamada.
 const VoiceChannel = forwardRef(function VoiceChannel(
-  { canal, socket, nomeUsuario, usuario, visible = false, onCompartilharTela, onAbrirConfiguracoes, onDesconectar, onEstadoChange, onAbrirConversa },
+  { canal, socket, nomeUsuario, usuario, visible = false, stageContainer, onCompartilharTela, onAbrirConfiguracoes,
+    onDesconectar, onEstadoChange, onAbrirConversa, onAbrirChamada },
   ref
 ) {
   const [participantes, setParticipantes] = useState([]); // [{socketId, nome}]
@@ -58,13 +38,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [telasMutadas, setTelasMutadas] = useState(() => new Set());
   const [volumesTelas, setVolumesTelas] = useState({});
   const [telaSelecionadaId, setTelaSelecionadaId] = useState(null);
+  const [telaMinimizada, setTelaMinimizada] = useState(false);
+  const [posicaoMiniPlayer, setPosicaoMiniPlayer] = useState(null);
   const [emTelaCheia, setEmTelaCheia] = useState(false);
   const [conectando, setConectando] = useState(true);
   const [connectionState, setConnectionState] = useState('connecting');
   const [compartilhamentoPendente, setCompartilhamentoPendente] = useState(false);
   const [compartilhandoTela, setCompartilhandoTela] = useState(false);
-  const [resolucaoTela, setResolucaoTela] = useState('1080p');
-  const [fpsTela, setFpsTela] = useState('60');
   const [telasRemotas, setTelasRemotas] = useState({}); // socketId -> MediaStream
 
   // Pipeline de áudio local: microfone -> ganho (volume ajustável) ->
@@ -91,8 +71,9 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   useEffect(() => () => cancelarPedidoCapturaTela(), []);
   const telaTileRef = useRef(null);
-  const resolucaoTelaAtualRef = useRef('1080p'); // pra saber o alvo de bitrate ao (re)equilibrar entre espectadores
   const qualidadeTelaAtualRef = useRef(resolveStreamQuality());
+  const preferenciasCodecPorFaixa = useRef(new WeakMap());
+  const faixaComBitrateInicial = useRef(new WeakMap());
   const avisouFalhaQualidadeRef = useRef(false);
   const conexoesRef = useRef({}); // socketId -> RTCPeerConnection
   const audiosRef = useRef({}); // socketId -> HTMLAudioElement (microfone)
@@ -106,19 +87,20 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const configuracaoAudioRef = useRef({ volumeEntrada: 100, volumeSaida: 100, microfoneId: '', foneId: '', perfilEntrada: 'isolamento', supressaoRuido: 'rnnoise', cancelamentoEco: true, ganhoAutomatico: true });
   // Aplica o teto escolhido e, se a pessoa ativou qualidade inteligente,
   // divide o orçamento entre espectadores para reduzir a demanda de upload.
-  function aplicarQualidadeVideo(remetente, res, { fps, escala } = {}) {
+  function aplicarQualidadeVideo(remetente) {
+    const qualidade = qualidadeTelaAtualRef.current;
     const numEspectadores = Math.max(1, Object.keys(conexoesRef.current).length);
-    const qualidadeVideo = getVideoEncodingParameters(
-      { ...qualidadeTelaAtualRef.current, resolution: res },
-      numEspectadores,
-    );
+    const qualidadeVideo = getVideoEncodingParameters(qualidade, numEspectadores);
+    const { video } = getCaptureConstraints(qualidade);
+    const captura = remetente.track?.getSettings?.() || {};
+    const escala = Math.max(1, (captura.width || 0) / video.width.max, (captura.height || 0) / video.height.max);
     const parametros = remetente.getParameters();
     const encodings = parametros.encodings?.length ? parametros.encodings : [{}];
     parametros.encodings = encodings.map((encoding) => ({
       ...encoding,
       maxBitrate: qualidadeVideo.maxBitrate,
-      maxFramerate: fps ?? qualidadeTelaAtualRef.current.fps,
-      ...(escala === undefined ? {} : { scaleResolutionDownBy: escala }),
+      maxFramerate: qualidade.fps,
+      scaleResolutionDownBy: escala,
     }));
     parametros.degradationPreference = qualidadeVideo.degradationPreference;
     remetente.setParameters(parametros).catch(() => {
@@ -138,20 +120,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     Object.values(conexoesRef.current).forEach((pc) => {
       const remetente = pc.getSenders().find((s) => s.track === videoTrack);
       if (!remetente) return;
-      aplicarQualidadeVideo(remetente, resolucaoTelaAtualRef.current);
+      aplicarQualidadeVideo(remetente);
     });
   }
 
   // Avisa o App sempre que algo que a sidebar precisa mostrar mudar.
   useEffect(() => {
-    const telasAtivas = Object.keys(telasRemotas);
-    if (compartilhandoTela && socket?.id) telasAtivas.push(socket.id);
+    const streams = { ...telasRemotas };
+    if (compartilhandoTela && socket?.id && telaLocalRef.current) streams[socket.id] = telaLocalRef.current;
     onEstadoChange?.({
       participantes,
       micMudo,
       audioMudo,
       compartilhandoTela,
-      telasAtivas,
+      telasAtivas: Object.keys(streams),
+      streams,
       telaSelecionadaId,
       erro,
       erroCompartilhamento,
@@ -325,15 +308,29 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     remetente.setParameters(parametros).catch(() => {});
   }
 
+  async function renegociar(pc, socketId) {
+    const track = telaLocalRef.current?.getVideoTracks()[0];
+    const transceiver = track && pc.getTransceivers?.().find((item) => item.sender.track === track);
+    if (typeof transceiver?.setCodecPreferences === 'function') {
+      const cache = preferenciasCodecPorFaixa.current;
+      if (!cache.has(track)) {
+        cache.set(track, resolveVideoCodecPreferences({ quality: qualidadeTelaAtualRef.current, track }).catch(() => []));
+      }
+      const preferencias = await cache.get(track);
+      if (conexoesRef.current[socketId] !== pc || transceiver.sender.track !== track) return;
+      if (preferencias.length) {
+        try { transceiver.setCodecPreferences(preferencias); } catch {}
+      }
+    }
+    const oferta = await pc.createOffer();
+    if (conexoesRef.current[socketId] !== pc) return;
+    await pc.setLocalDescription(oferta);
+    socket.emit('webrtc-oferta', { para: socketId, oferta });
+  }
+
   useEffect(() => {
     if (!socket) return;
     let cancelado = false;
-
-    async function renegociar(pc, socketId) {
-      const oferta = await pc.createOffer();
-      await pc.setLocalDescription(oferta);
-      socket.emit('webrtc-oferta', { para: socketId, oferta });
-    }
 
     function criarConexao(socketId) {
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
@@ -347,9 +344,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       telaLocalRef.current?.getTracks().forEach((track) => {
         const remetente = pc.addTrack(track, telaLocalRef.current);
         if (track.kind === 'video') {
-          const transceiver = pc.getTransceivers().find((t) => t.sender === remetente);
-          preferirH264(transceiver);
-          aplicarQualidadeVideo(remetente, resolucaoTelaAtualRef.current);
+          aplicarQualidadeVideo(remetente);
         } else if (track.kind === 'audio') {
           const parametros = remetente.getParameters();
           parametros.encodings = (parametros.encodings?.length ? parametros.encodings : [{}]).map(
@@ -556,7 +551,19 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
     socket.on('webrtc-resposta', async ({ de, resposta }) => {
       const pc = conexoesRef.current[de];
-      if (pc) await pc.setRemoteDescription(resposta);
+      if (!pc) return;
+      const track = telaLocalRef.current?.getVideoTracks()[0];
+      const transceiver = track && pc.getTransceivers?.().find((item) => item.sender.track === track);
+      if (transceiver && faixaComBitrateInicial.current.get(pc) !== track) {
+        const maxBitrate = getVideoEncodingParameters(qualidadeTelaAtualRef.current, Object.keys(conexoesRef.current).length).maxBitrate;
+        const ajustada = withScreenStartBitrate(resposta, transceiver.mid, maxBitrate);
+        if (ajustada !== resposta) {
+          await pc.setRemoteDescription(ajustada);
+          faixaComBitrateInicial.current.set(pc, track);
+          return;
+        }
+      }
+      await pc.setRemoteDescription(resposta);
     });
 
     socket.on('webrtc-candidato', async ({ de, candidato }) => {
@@ -661,11 +668,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   async function renegociarComTodos() {
-    for (const [socketId, pc] of Object.entries(conexoesRef.current)) {
-      const oferta = await pc.createOffer();
-      await pc.setLocalDescription(oferta);
-      socket.emit('webrtc-oferta', { para: socketId, oferta });
-    }
+    await Promise.all(Object.entries(conexoesRef.current).map(([socketId, pc]) => renegociar(pc, socketId)));
   }
 
   // CORREÇÃO DO BUG "sempre compartilha o monitor 1": antes de chamar
@@ -681,16 +684,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     try {
       setErroCompartilhamento('');
       avisouFalhaQualidadeRef.current = false;
-      const qualidade = resolveStreamQuality({
-        ...config,
-        resolution: config?.resolution ?? config?.resolucao ?? resolucaoTela,
-        fps: config?.fps ?? Number(fpsTela),
-      });
-      const res = qualidade.resolution;
-      const fps = qualidade.fps;
-      const dimensoes = res === '1080p'
-        ? { largura: 1920, altura: 1080 }
-        : { largura: 1280, altura: 720 };
+      const qualidade = resolveStreamQuality(config);
 
       // Both rooms and voice channels share the same capture and audio policy.
       const stream = config?.stream || await requestScreenCapture(qualidade, undefined, { signal: controller.signal });
@@ -719,26 +713,17 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       }
       telaLocalRef.current = stream;
       if (streamAnterior && streamAnterior !== stream) stopScreenCapture(streamAnterior).catch(() => {});
-      resolucaoTelaAtualRef.current = res;
       qualidadeTelaAtualRef.current = qualidade;
-      setResolucaoTela(res);
-      setFpsTela(String(fps));
       setCompartilhandoTela(true);
-      if (visible && socket?.id) setTelaSelecionadaId(socket.id);
+      if (visible && socket?.id) {
+        setTelaMinimizada(false);
+        setTelaSelecionadaId(socket.id);
+      }
       tocarEfeito('transmitir');
-
-      const alturaNativa = videoTrack.getSettings().height || dimensoes.altura;
-      const alturaAlvo = res === '1080p' ? 1080 : 720;
-      const escala = alturaNativa > alturaAlvo ? alturaNativa / alturaAlvo : 1;
 
       Object.values(conexoesRef.current).forEach((pc) => {
         const remetente = pc.addTrack(videoTrack, stream);
-        const transceiver = pc.getTransceivers().find((t) => t.sender === remetente);
-        preferirH264(transceiver);
-
-        // Se a conexão apertar, prefere cair o FPS a perder nitidez de
-        // resolução — pra manter a imagem legível mesmo com engasgo.
-        aplicarQualidadeVideo(remetente, res, { fps, escala });
+        aplicarQualidadeVideo(remetente);
 
         // Áudio do sistema (jogo, música, etc.) — vai como uma segunda
         // faixa de áudio, separada da sua voz no microfone.
@@ -858,11 +843,21 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     pararCompartilhamento,
     aplicarConfiguracao,
     alternarTransmissao,
+    abrirTransmissao,
     fecharTransmissao: () => setTelaSelecionadaId(null),
   }));
 
   function alternarTransmissao(socketId) {
+    if (telaMinimizada) {
+      abrirTransmissao(socketId);
+      return;
+    }
     setTelaSelecionadaId((atual) => atual === socketId ? null : socketId);
+  }
+
+  function abrirTransmissao(socketId) {
+    setTelaMinimizada(false);
+    setTelaSelecionadaId(socketId);
   }
 
   function sincronizarAudioDasTelas() {
@@ -923,28 +918,42 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     return () => document.removeEventListener('fullscreenchange', sincronizarTelaCheia);
   }, []);
 
-  if (!visible && !streamSelecionada) return null;
+  const mostrarMiniPlayer = Boolean(streamSelecionada && (!visible || telaMinimizada));
+  if (!visible && !mostrarMiniPlayer) return null;
   const localId = socket?.id || 'local';
   const participantesDoPalco = [...new Map([
     ...participantes.filter((p) => p.socketId !== localId),
     { socketId: localId, nome: nomeUsuario || usuario?.nome || 'Você', avatarCor: usuario?.avatarCor, avatarUrl: usuario?.avatarUrl },
   ].map((p) => [p.socketId, p])).values()];
 
-  return <VoiceCallStage
+  const stage = visible && <VoiceCallStage
     canal={canal} participantes={participantesDoPalco} socketId={localId}
     micMudo={micMudo} audioMudo={audioMudo} conectando={conectando} connectionState={connectionState}
     erro={erro} erroCompartilhamento={erroCompartilhamento} compartilhamentoPendente={compartilhamentoPendente}
-    compartilhandoTela={compartilhandoTela} streamSelecionada={streamSelecionada}
-    telaSelecionadaId={telaSelecionadaId} telaLocalSelecionada={telaLocalSelecionada}
+    compartilhandoTela={compartilhandoTela} streamSelecionada={mostrarMiniPlayer ? null : streamSelecionada}
+    telaSelecionadaId={mostrarMiniPlayer ? null : telaSelecionadaId} telaLocalSelecionada={telaLocalSelecionada}
     participanteSelecionado={participanteSelecionado} telasRemotas={telasRemotas}
+    streamLocal={compartilhandoTela ? telaLocalRef.current : null}
     telaTileRef={telaTileRef} emTelaCheia={emTelaCheia} telasMutadas={telasMutadas} volumesTelas={volumesTelas}
     onAlternarMic={alternarMudo} onAlternarAudio={alternarAudio}
     onCompartilharTela={onCompartilharTela} onPararCompartilhamento={pararCompartilhamento}
     onDesconectar={onDesconectar} onAbrirConfiguracoes={onAbrirConfiguracoes}
     onAbrirConversa={onAbrirConversa}
     onSelecionarTela={alternarTransmissao} onFecharTela={() => setTelaSelecionadaId(null)}
+    onMinimizarTela={() => setTelaMinimizada(true)}
     onTelaCheia={abrirTelaCheia} onMutarTela={alternarMuteTela} onVolumeTela={alterarVolumeTela}
   />;
+  return <>
+    {stage && (stageContainer === undefined ? stage : stageContainer ? createPortal(stage, stageContainer) : null)}
+    {mostrarMiniPlayer && <VoiceMiniPlayer
+      stream={streamSelecionada} name={telaLocalSelecionada ? 'Sua tela' : participanteSelecionado?.nome || 'Transmissão'}
+      channel={canal.nome} local={telaLocalSelecionada} muted={telasMutadas.has(telaSelecionadaId)}
+      position={posicaoMiniPlayer} setPosition={setPosicaoMiniPlayer}
+      onRestore={() => { setTelaMinimizada(false); onAbrirChamada?.(); }}
+      onMute={() => alternarMuteTela(telaSelecionadaId)}
+      onClose={() => setTelaSelecionadaId(null)}
+    />}
+  </>;
 });
 
 export default VoiceChannel;

@@ -3,6 +3,7 @@ import { summarizeWebRtcStats } from './streamStats.mjs';
 import { createIceConnectionHealthMonitor } from './iceConnectionHealth.mjs';
 import { DEFAULT_ROOM_ICE_SERVERS, loadRoomIceConfiguration } from './roomIceConfiguration.mjs';
 import { resolveVideoCodecPreferences } from './streamCodecs.mjs';
+import { withScreenStartBitrate } from './streamStartup.mjs';
 
 export function createStreamRoomPeerSession({
   socket,
@@ -810,7 +811,12 @@ export function createStreamRoomPeerSession({
         return;
       }
       if (peer.signalingState !== 'have-local-offer' || peer.localDescription?.type !== 'offer') return;
-      await peer.setRemoteDescription({ type: description.type, sdp: description.sdp });
+      const answer = { type: description.type, sdp: description.sdp };
+      const track = localStream?.getTracks().find((item) => item.kind === 'video');
+      const transceiver = !peer.remoteDescription && track
+        && peer.getTransceivers?.().find((item) => item.sender.track === track);
+      const adjusted = withScreenStartBitrate(answer, transceiver?.mid, allocatedBitrateByPeer.get(peerId));
+      await peer.setRemoteDescription(adjusted);
       if (!isPeerCurrent(peerId, peer)) return;
       await applyWaitingCandidates(peerId, peer);
     });

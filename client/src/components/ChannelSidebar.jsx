@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
 import InviteServerModal from './InviteServerModal.jsx';
 import VoiceConnectionPanel from './VoiceConnectionPanel.jsx';
+import VoiceStreamPreview from './VoiceStreamPreview.jsx';
 
 function IconTexto() {
   return <span className="channel-icon" aria-hidden="true">#</span>;
@@ -226,7 +227,10 @@ export default function ChannelSidebar({
                     const souEu = canalDeVoz?.id === c.id && p.nome === nomeUsuarioNaVoz;
                     const estaAoVivo = canalDeVoz?.id === c.id && vozEstado.telasAtivas?.includes(p.socketId);
                     return (
-                      <div key={p.socketId} className="voz-participante-item">
+                      <VoiceStreamPreview key={p.socketId} className="voz-participante-item"
+                        stream={estaAoVivo ? vozEstado.streams?.[p.socketId] : null} name={p.nome}
+                        avatarUrl={souEu ? usuario.avatarUrl : p.avatarUrl} avatarColor={souEu ? usuario.avatarCor : p.avatarCor}
+                        onWatch={() => onAssistirTransmissao?.(p.socketId)}>
                         <Avatar
                           nome={p.nome}
                           avatarUrl={souEu ? usuario.avatarUrl : p.avatarUrl}
@@ -241,7 +245,7 @@ export default function ChannelSidebar({
                             type="button"
                             className={`voz-live-badge${vozEstado.telaSelecionadaId === p.socketId ? ' ativo' : ''}`}
                             aria-pressed={vozEstado.telaSelecionadaId === p.socketId}
-                            title={`${vozEstado.telaSelecionadaId === p.socketId ? 'Fechar' : 'Assistir'} a transmissão de ${p.nome}`}
+                            title={`Assistir a transmissão de ${p.nome}`}
                             onClick={() => onAssistirTransmissao?.(p.socketId)}
                           >
                             <span aria-hidden="true" /> AO VIVO
@@ -257,7 +261,7 @@ export default function ChannelSidebar({
                             Remover
                           </button>
                         )}
-                      </div>
+                      </VoiceStreamPreview>
                     );
                   })}
                 </div>

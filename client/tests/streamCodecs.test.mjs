@@ -53,3 +53,14 @@ test('codec selection bounds slow probes and preserves all codec profile variant
   });
   assert.deepEqual(result, [high, ...codecs]);
 });
+
+test('codec selection can prefer hardware AV1 while retaining H264 for receivers that need it', async () => {
+  const av1 = { mimeType: 'video/AV1', clockRate: 90000 };
+  const result = await resolveVideoCodecPreferences({
+    sender: { getCapabilities: () => ({ codecs: [...codecs, av1] }) },
+    mediaCapabilities: { async encodingInfo({ video }) {
+      return { supported: true, smooth: true, powerEfficient: video.contentType === 'video/AV1' };
+    } },
+  });
+  assert.deepEqual(result, [av1, ...codecs]);
+});

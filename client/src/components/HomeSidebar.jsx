@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
 import { useInterfacePreferences } from '../interfacePreferences.mjs';
 import VoiceConnectionPanel from './VoiceConnectionPanel.jsx';
+import VoiceStreamPreview from './VoiceStreamPreview.jsx';
 
 export function WorkspaceIcon({ name, size = 20, muted = false }) {
   const icons = {
@@ -33,7 +34,7 @@ export function UserDock({ usuario, onPerfil, onSettings, voice, voiceActions, c
   </footer>;
 }
 
-export default function HomeSidebar({ view, amigos = [], servidores = [], canais = [], dmAtiva, usuario, onAmigos, onDM, onServidor, onCanal, onPerfil, onSettings, voice, voiceActions, voiceChannel, connected }) {
+export default function HomeSidebar({ view, amigos = [], servidores = [], canais = [], dmAtiva, usuario, onAmigos, onDM, onServidor, onCanal, onPerfil, onSettings, voice, voiceActions, voiceChannel, onAssistirTransmissao, connected }) {
   const [prefs] = useInterfacePreferences();
   const [query, setQuery] = useState('');
   const searchRef = useRef(null);
@@ -52,9 +53,19 @@ export default function HomeSidebar({ view, amigos = [], servidores = [], canais
     </nav>
     <div className="home-sidebar__heading"><span>{search ? 'RESULTADOS DA BUSCA' : 'MENSAGENS DIRETAS'}</span><button type="button" onClick={onAmigos} aria-label="Encontrar pessoas" title="Encontrar pessoas">+</button></div>
     <div className="home-sidebar__conversations">
-      {amigos.filter((friend) => !search || matches(friend.nome)).map((friend) => <button type="button" key={friend.id} className={`home-sidebar__dm${dmAtiva?.id === friend.id && view === 'dm' ? ' active' : ''}`} onClick={() => choose(() => onDM(friend))}>
-        <span className="home-sidebar__dm-avatar"><Avatar nome={prefs.streamerMode ? 'Amigo' : friend.nome} avatarCor={friend.avatar_cor} avatarUrl={prefs.streamerMode ? null : friend.avatar_url} tamanho="32px"/><i className={friend.online ? 'is-online' : ''}/></span><span>{prefs.streamerMode ? 'Conversa privada' : friend.nome}</span>
-      </button>)}
+      {amigos.filter((friend) => !search || matches(friend.nome)).map((friend) => {
+        const participant = voice?.participantes?.find((peer) => String(peer.usuarioId) === String(friend.id) && voice.streams?.[peer.socketId]);
+        const name = prefs.streamerMode ? 'Conversa privada' : friend.nome;
+        const avatarUrl = prefs.streamerMode ? null : friend.avatar_url;
+        return <VoiceStreamPreview key={friend.id} className="home-sidebar__dm-preview"
+          stream={voice?.streams?.[participant?.socketId]} name={name} avatarUrl={avatarUrl} avatarColor={friend.avatar_cor}
+          onWatch={() => onAssistirTransmissao?.(participant.socketId)}>
+          <button type="button" className={`home-sidebar__dm${dmAtiva?.id === friend.id && (view === 'dm' || view === 'chamada-direta') ? ' active' : ''}`} onClick={() => choose(() => onDM(friend))}>
+            <span className="home-sidebar__dm-avatar"><Avatar nome={prefs.streamerMode ? 'Amigo' : friend.nome} avatarCor={friend.avatar_cor} avatarUrl={avatarUrl} tamanho="32px"/><i className={friend.online ? 'is-online' : ''}/></span><span>{name}</span>
+            {participant && <span className="voice-live-badge">AO VIVO</span>}
+          </button>
+        </VoiceStreamPreview>;
+      })}
       {search && servidores.filter((server) => matches(server.nome)).map((server) => <button type="button" className="home-sidebar__dm" key={`server-${server.id}`} onClick={() => choose(() => onServidor(server.id))}><span className="home-sidebar__result-icon">{server.nome.slice(0, 2)}</span><span>{server.nome}<small>Servidor</small></span></button>)}
       {search && canais.filter((channel) => matches(channel.nome)).map((channel) => <button type="button" className="home-sidebar__dm" key={`channel-${channel.id}`} onClick={() => choose(() => onCanal(channel))}><span className="home-sidebar__result-icon">#</span><span>{channel.nome}<small>Canal</small></span></button>)}
       {!amigos.length && !search && <p className="home-sidebar__empty">Adicione amigos para conversar e ligar sem precisar de um servidor.</p>}

@@ -1,6 +1,8 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
 import { getVoicePanelStatus } from './VoiceConnectionPanel.jsx';
+import VoiceStreamPreview from './VoiceStreamPreview.jsx';
+import VoiceStreamVideo from './VoiceStreamVideo.jsx';
 import './VoiceCallStage.css';
 
 export function CallIcon({ name, size = 24 }) {
@@ -17,16 +19,43 @@ export function CallIcon({ name, size = 24 }) {
     disconnect: <><path d="M3 15.5c0-6 18-6 18 0v3l-5-1.5v-3M8 14v3L3 18.5" /></>,
     settings: <><path d="m9 3-.7 2.2-2 .9-2.1-.5-1.5 2.6L4 10v2l-1.3 1.8 1.5 2.6 2.1-.5 2 .9L9 19h3l.7-2.2 2-.9 2.1.5 1.5-2.6L17 12v-2l1.3-1.8-1.5-2.6-2.1.5-2-.9L12 3H9Z" /><circle cx="10.5" cy="11" r="3" /></>,
     expand: <path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" />,
+    minimize: <><rect x="3" y="4" width="18" height="15" rx="2" /><path d="M12 11h6v5h-6z" /></>,
+    grip: <><path d="M9 5h.01m0 7h.01m0 7h.01M15 5h.01m0 7h.01m0 7h.01" strokeWidth="3" /></>,
     close: <path d="m6 6 12 12M6 18 18 6" />,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[name]}</svg>;
 }
 
+function ParticipantTile({ participant, compact, local, live, stream, selected, status, micMudo, audioMudo, onSelect }) {
+  const name = participant.nome || 'Participante';
+  const open = () => onSelect(participant.socketId);
+  return <VoiceStreamPreview as="article" stream={stream} name={name} avatarUrl={participant.avatarUrl}
+    avatarColor={participant.avatarCor} onWatch={open}
+    className={`voice-participant${local ? ' voice-participant--local' : ''}${compact ? ' voice-participant--compact' : ''}`}
+    data-participant-socket={participant.socketId}>
+    <div className="voice-participant__center"><Avatar nome={name} avatarUrl={participant.avatarUrl} avatarCor={participant.avatarCor || 'var(--as-accent, #9270f4)'} tamanho={compact ? 'md' : 'xl'} /></div>
+    <div className="voice-participant__meta"><strong className="voice-participant__name">{name}{local && <small> (você)</small>}</strong><span className="voice-participant__status">{local ? status : 'Na chamada'}</span></div>
+    {local && (micMudo || audioMudo) && <span className="voice-participant__muted" title={audioMudo ? 'Áudio desativado' : 'Microfone silenciado'}><CallIcon name={audioMudo ? 'headphonesOff' : 'micOff'} size={18} /></span>}
+    {live && <button type="button" className={`voice-participant__watch${selected ? ' voice-participant__watch--active' : ''}`} onClick={open} aria-label={`${selected ? 'Fechar transmissão de' : 'Assistir transmissão de'} ${name}`}><span className="voice-live-badge">AO VIVO</span><span>{selected ? 'Assistindo' : local ? 'Ver sua tela' : 'Assistir'}</span></button>}
+  </VoiceStreamPreview>;
+}
+
+function FocusedStreamVideo({ stream }) {
+  const [height, setHeight] = useState(0);
+  return <>
+    <VoiceStreamVideo stream={stream} onResize={(event) => setHeight(event.currentTarget.videoHeight)} />
+    <div className="voice-stage__stream-badges">
+      {height > 0 && <span className="voice-stage__resolution">{height}p</span>}
+      <span className="voice-live-badge">AO VIVO</span>
+    </div>
+  </>;
+}
+
 export default function VoiceCallStage({ canal, participantes, socketId, micMudo, audioMudo, conectando, connectionState, compartilhamentoPendente, erro, erroCompartilhamento,
   compartilhandoTela, streamSelecionada, telaSelecionadaId, telaLocalSelecionada, participanteSelecionado,
-  telasRemotas, telaTileRef, emTelaCheia, telasMutadas, volumesTelas,
+  telasRemotas, streamLocal, telaTileRef, emTelaCheia, telasMutadas, volumesTelas,
   onAlternarMic, onAlternarAudio, onCompartilharTela, onPararCompartilhamento, onDesconectar, onAbrirConfiguracoes,
-  onSelecionarTela, onFecharTela, onTelaCheia, onMutarTela, onVolumeTela, onAbrirConversa }) {
+  onSelecionarTela, onFecharTela, onMinimizarTela, onTelaCheia, onMutarTela, onVolumeTela, onAbrirConversa }) {
   const menuRef = useRef(null);
   const connection = getVoicePanelStatus({ connectionState, conectando, erro });
   const status = connection.label;
@@ -35,17 +64,17 @@ export default function VoiceCallStage({ canal, participantes, socketId, micMudo
     if (menuRef.current) menuRef.current.open = false;
     action?.();
   }
-  function ParticipantTile({ participant, compact = false }) {
+  const streamFor = (participant) => participant.socketId === socketId ? streamLocal : telasRemotas[participant.socketId];
+  function participantTile(participant, compact = false) {
     const local = participant.socketId === socketId;
-    const live = local ? compartilhandoTela : Boolean(telasRemotas[participant.socketId]);
-    return <article className={`voice-participant${local ? ' voice-participant--local' : ''}${compact ? ' voice-participant--compact' : ''}`} data-participant-socket={participant.socketId}>
-      <div className="voice-participant__center"><Avatar nome={participant.nome || 'Participante'} avatarUrl={participant.avatarUrl} avatarCor={participant.avatarCor || 'var(--as-accent, #9270f4)'} tamanho={compact ? 'md' : 'xl'} /></div>
-      <div className="voice-participant__meta"><strong className="voice-participant__name">{participant.nome || 'Participante'}{local && <small> (você)</small>}</strong><span className="voice-participant__status">{local ? connection.id !== 'connected' ? status : audioMudo ? 'Áudio desativado' : micMudo ? 'Microfone silenciado' : 'Na chamada' : 'Na chamada'}</span></div>
-      {local && (micMudo || audioMudo) && <span className="voice-participant__muted" title={audioMudo ? 'Áudio desativado' : 'Microfone silenciado'}><CallIcon name={audioMudo ? 'headphonesOff' : 'micOff'} size={18} /></span>}
-      {live && <button type="button" className={`voice-participant__watch${telaSelecionadaId === participant.socketId ? ' voice-participant__watch--active' : ''}`} onClick={() => onSelecionarTela(participant.socketId)} aria-label={`${telaSelecionadaId === participant.socketId ? 'Fechar transmissão de' : 'Assistir transmissão de'} ${participant.nome || 'Participante'}`}><span className="voice-live-badge">AO VIVO</span><span>{telaSelecionadaId === participant.socketId ? 'Assistindo' : local ? 'Ver sua tela' : 'Assistir'}</span></button>}
-    </article>;
+    return <ParticipantTile key={participant.socketId} participant={participant} compact={compact} local={local}
+      live={local ? compartilhandoTela : Boolean(streamFor(participant))}
+      stream={streamFor(participant)} selected={telaSelecionadaId === participant.socketId}
+      status={connection.id !== 'connected' ? status : audioMudo ? 'Áudio desativado' : micMudo ? 'Microfone silenciado' : 'Na chamada'}
+      micMudo={micMudo} audioMudo={audioMudo} onSelect={onSelecionarTela} />;
   }
-  return <section className="content voice-call-panel voice-call-panel--active voice-stage" aria-label={`Chamada de voz ${canal.nome}`}>
+  const liveTiles = canal.direta ? [] : participantes.filter((participant) => streamFor(participant));
+  return <section className={`content voice-call-panel voice-call-panel--active voice-stage${streamSelecionada ? ' voice-stage--watching' : ''}`} aria-label={`Chamada de voz ${canal.nome}`}>
     <header className="voice-stage__header"><CallIcon name="voice" size={22} /><h1>{canal.nome}</h1><span className="voice-stage__header-divider" /><span className="voice-stage__people">{participantes.length} {participantes.length === 1 ? 'participante' : 'participantes'}</span>{onAbrirConversa && <button type="button" className="voice-stage__back" onClick={onAbrirConversa}>Ver conversa</button>}{streamSelecionada && <button type="button" className="voice-stage__back" onClick={onFecharTela}>Voltar aos participantes</button>}</header>
     <div className="voice-stage__body">
       <div className={`voice-stage__connection${connection.id === 'failed' ? ' voice-stage__connection--error' : connection.id === 'connecting' ? ' voice-stage__connection--pending' : ''}`} role={erro ? 'alert' : 'status'}><span />{status}{erro && onAbrirConfiguracoes && <button type="button" onClick={onAbrirConfiguracoes}>Configurações de voz</button>}</div>
@@ -53,16 +82,25 @@ export default function VoiceCallStage({ canal, participantes, socketId, micMudo
       {erroCompartilhamento && <p className="voice-stage__error" role="alert">{erroCompartilhamento}</p>}
       {streamSelecionada ? <div className="voice-stage__focused">
         <div className="voice-stage__stream tela-tile" key={telaSelecionadaId} ref={telaTileRef}>
-          <video autoPlay playsInline muted ref={(element) => { if (element && element.srcObject !== streamSelecionada) element.srcObject = streamSelecionada; }} />
-          <div className="voice-stage__stream-label"><span className="voice-live-badge">AO VIVO</span><span className="voice-participant__name">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Transmissão ao vivo'}</span></div>
+          <FocusedStreamVideo stream={streamSelecionada} />
+          <div className="voice-stage__stream-label"><span className="voice-participant__name">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Transmissão ao vivo'}</span></div>
           <div className="voice-stage__stream-controls">
             {!telaLocalSelecionada && <><label className="voice-stage__volume"><span>Volume {Math.round(volumesTelas[telaSelecionadaId] ?? 100)}%</span><input type="range" min="0" max="100" step="1" value={volumesTelas[telaSelecionadaId] ?? 100} aria-label={`Volume da transmissão de ${participanteSelecionado?.nome || 'Alguém'}`} onChange={(event) => onVolumeTela(telaSelecionadaId, event.target.valueAsNumber)} /></label><button type="button" onClick={() => onMutarTela(telaSelecionadaId)} aria-label={telasMutadas.has(telaSelecionadaId) ? 'Ativar o áudio dessa tela' : 'Mutar o áudio dessa tela'}>{telasMutadas.has(telaSelecionadaId) ? 'Ativar som' : 'Silenciar'}</button></>}
             <button type="button" onClick={onTelaCheia} title={emTelaCheia ? 'Sair da tela cheia' : 'Abrir a transmissão em tela cheia'} aria-label={emTelaCheia ? 'Sair da tela cheia' : 'Abrir a transmissão em tela cheia'}><CallIcon name="expand" size={18} /></button>
+            {onMinimizarTela && <button type="button" onClick={onMinimizarTela} aria-label="Minimizar transmissão" title="Minimizar transmissão"><CallIcon name="minimize" size={18} /></button>}
             <button type="button" onClick={onFecharTela} title="Fechar a transmissão sem sair da chamada" aria-label="Fechar transmissão"><CallIcon name="close" size={18} /></button>
           </div>
         </div>
-        <div className="voice-stage__filmstrip" aria-label="Participantes da chamada">{participantes.map((participant) => <ParticipantTile key={participant.socketId} participant={participant} compact />)}</div>
-      </div> : <div className={`voice-stage__grid${participantes.length === 1 ? ' voice-stage__grid--alone' : ''}`} aria-label="Participantes da chamada">{participantes.map((participant) => <ParticipantTile key={participant.socketId} participant={participant} />)}</div>}
+        {!canal.direta && <div className="voice-stage__filmstrip" aria-label="Participantes da chamada">{participantes.map((participant) => participantTile(participant, true))}</div>}
+      </div> : <div className={`voice-stage__grid${canal.direta ? '' : ' voice-stage__grid--server'}${participantes.length + liveTiles.length === 1 ? ' voice-stage__grid--alone' : ''}`} aria-label="Participantes da chamada">
+        {liveTiles.map((participant) => <button key={`stream-${participant.socketId}`} type="button" className="voice-stage__live-tile"
+          onClick={() => onSelecionarTela(participant.socketId)} aria-label={`Ampliar tela de ${participant.nome}`}>
+          <VoiceStreamVideo stream={streamFor(participant)} />
+          <span className="voice-live-badge">AO VIVO</span>
+          <span className="voice-participant__name">{participant.nome}</span>
+        </button>)}
+        {participantes.map((participant) => participantTile(participant))}
+      </div>}
     </div>
     <footer className="voice-stage__footer">
       <div className="voice-stage__controls" aria-label="Controles da chamada">

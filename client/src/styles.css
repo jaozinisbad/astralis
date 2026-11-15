@@ -799,22 +799,6 @@ button, input, textarea, select {
   min-width: 0;
 }
 
-/* Ao assistir, use o palco central do chat; fechado, o componente não
-   renderiza e não consome espaço na janela. */
-.app--transmissao-aberta > .content:not(.voice-call-panel) {
-  display: none;
-}
-
-.app--transmissao-aberta > .voice-call-panel {
-  order: 2;
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.app--transmissao-aberta > .member-sidebar {
-  order: 3;
-}
-
 .voice-call-panel__header {
   gap: 10px;
 }
