@@ -11,12 +11,22 @@ const realRequire = createRequire(path.join(electronDirectory, 'main.js'));
 const release = { version: '9.8.7', files: [{ url: 'Astralis-Setup-9.8.7.exe', sha512: 'test-sha', size: 1024 }] };
 const updateChannels = ['obter-status-atualizacao', 'verificar-atualizacao', 'baixar-atualizacao', 'reiniciar-para-atualizar'];
 
-async function loadMain(packaged = true) {
+async function loadMain(packaged = true, ownsInstance = true) {
   const app = new EventEmitter();
+  const windows = [];
+  const trays = [];
   const calls = { checks: 0, downloads: 0, installs: 0, quits: 0 };
   Object.assign(app, {
     isPackaged: packaged, setName() {}, setAppUserModelId() {}, getPath: () => '/virtual-user-data',
-    whenReady: () => Promise.resolve(), quit: () => { calls.quits += 1; },
+    requestSingleInstanceLock: () => ownsInstance,
+    whenReady: () => Promise.resolve(),
+    quit() {
+      calls.quits += 1;
+      app.emit('before-quit');
+      for (const window of windows) {
+        if (!window.isDestroyed()) window.close();
+      }
+    },
   });
   const ipcMain = new EventEmitter();
   const handlers = new Map();
@@ -30,11 +40,13 @@ async function loadMain(packaged = true) {
     quitAndInstall() { calls.installs += 1; },
     checkForUpdatesAndNotify() { throw new Error('Automatic notification/download path must not be used'); },
   });
-  const windows = [];
   class Window extends EventEmitter {
-    constructor() {
+    constructor(options) {
       super();
+      this.options = options;
       this.destroyed = false;
+      this.visible = true;
+      this.minimized = false;
       this.messages = [];
       this.webContents = new EventEmitter();
       this.webContents.send = (...args) => this.messages.push(args);
@@ -43,16 +55,35 @@ async function loadMain(packaged = true) {
       windows.push(this);
     }
     isDestroyed() { return this.destroyed; }
+    isMinimized() { return this.minimized; }
+    restore() { this.minimized = false; }
+    show() { this.visible = true; }
+    hide() { this.visible = false; }
+    focus() { this.emit('focus'); }
+    close() {
+      let prevented = false;
+      this.emit('close', { preventDefault() { prevented = true; } });
+      if (prevented) return;
+      this.destroyed = true;
+      this.emit('closed');
+    }
     removeMenu() {}
     loadURL() {}
     loadFile() {}
+  }
+  class Tray extends EventEmitter {
+    constructor() { super(); trays.push(this); }
+    setToolTip() {}
+    setContextMenu(menu) { this.menu = menu; }
+    destroy() { this.destroyed = true; }
   }
   const intervals = new Map();
   let timerId = 0;
   const context = {
     require(id) {
       if (id === 'electron') return {
-        app, ipcMain, BrowserWindow: Window, clipboard: { writeText() {} }, desktopCapturer: {},
+        app, ipcMain, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: (menu) => menu },
+        clipboard: { writeText() {} }, desktopCapturer: {},
         session: { defaultSession: { setDisplayMediaRequestHandler() {}, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
       };
       if (id === 'electron-updater') return { autoUpdater: updater };
@@ -68,10 +99,10 @@ async function loadMain(packaged = true) {
   vm.runInNewContext(readFileSync(path.join(electronDirectory, 'main.js'), 'utf8'), context, { filename: 'electron/main.js' });
   // Wait for whenReady, startup check, and the controller's check finally.
   await new Promise((resolve) => setImmediate(resolve));
-  return { app, updater, calls, handlers, window: windows[0], intervals, invoke: (name) => handlers.get(name)() };
+  return { app, updater, calls, handlers, window: windows[0], tray: trays[0], intervals, invoke: (name) => handlers.get(name)() };
 }
 
-test('packaged main connects IPC to manual actions and keeps normal close free of installation', async () => {
+test('closing to the Windows tray keeps the renderer and pending update alive until explicit quit', async () => {
   const h = await loadMain();
   for (const channel of updateChannels) assert.equal(typeof h.handlers.get(channel), 'function', channel);
   assert.equal(h.calls.checks, 1);
@@ -91,10 +122,25 @@ test('packaged main connects IPC to manual actions and keeps normal close free o
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.invoke('obter-status-atualizacao').status, 'downloaded');
   assert.equal(h.calls.checks, 1);
-  h.window.destroyed = true;
-  h.window.emit('closed');
-  h.app.emit('window-all-closed');
+  assert.equal(h.window.options.webPreferences.backgroundThrottling, false);
+  h.window.close();
+  assert.equal(h.window.visible, false);
+  assert.equal(h.window.destroyed, false);
+  assert.equal(h.calls.quits, 0);
+  assert.equal(h.invoke('obter-status-atualizacao').status, 'downloaded');
+
+  h.tray.emit('click');
+  assert.equal(h.window.visible, true);
+  h.window.close();
+  h.app.emit('second-instance');
+  assert.equal(h.window.visible, true);
+  h.window.minimized = true;
+  h.tray.menu.find((item) => item.label === 'Abrir Astralis').click();
+  assert.equal(h.window.minimized, false);
+  h.tray.menu.find((item) => item.label === 'Sair do Astralis').click();
   assert.equal(h.calls.quits, 1);
+  assert.equal(h.window.destroyed, true);
+  assert.equal(h.tray.destroyed, true);
   assert.equal(h.calls.installs, 0);
   assert.equal(h.updater.autoInstallOnAppQuit, false);
   assert.equal(h.intervals.size, 0);
@@ -109,7 +155,17 @@ test('packaged main invokes installation once only through the restart IPC after
   assert.equal(h.calls.installs, 1);
   assert.equal(h.invoke('obter-status-atualizacao').status, 'installing');
   assert.equal(h.updater.autoInstallOnAppQuit, false);
-  h.window.emit('closed');
+  // electron-updater calls app.quit after starting the installer.
+  h.app.quit();
+  assert.equal(h.window.destroyed, true);
+  assert.equal(h.tray.destroyed, true);
+});
+
+test('a second Windows instance exits without creating a second window or tray icon', async () => {
+  const h = await loadMain(true, false);
+  assert.equal(h.calls.quits, 1);
+  assert.equal(h.window, undefined);
+  assert.equal(h.tray, undefined);
 });
 
 test('development main exposes the same IPC without checking, downloading, or installing releases', async () => {

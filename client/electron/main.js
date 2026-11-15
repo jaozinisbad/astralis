@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain } = require('electron');
+const { app, BrowserWindow, clipboard, desktopCapturer, session, ipcMain, Menu, Tray } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const { pathToFileURL } = require('node:url');
@@ -15,6 +15,7 @@ const { exec } = require('child_process');
 const { findSelectedCaptureSource, getWindowHandleFromSourceId, shouldUseSystemLoopback, isDiscordProcessName, getDiscordAudioExclusionTarget } = require('./screenCapturePolicy.cjs');
 
 app.setName('Astralis');
+const iconeAstralis = path.join(__dirname, '../build/icon.ico');
 const caminhoPreferenciasCapturaJanela = path.join(app.getPath('userData'), 'capture-preferences.json');
 const compatibilidadeCapturaJanelaDisponivel = process.platform === 'win32'
   && supportsWindows10WindowCaptureCompatibility(process.getSystemVersion?.());
@@ -360,10 +361,12 @@ function createWindow() {
     backgroundColor: '#24212c',
     titleBarStyle: 'hidden',
     ...(process.platform === 'win32' ? { titleBarOverlay: { color: '#15121b', symbolColor: '#c9c1d8', height: 32 } } : {}),
-    icon: path.join(__dirname, '../build/icon.ico'),
+    icon: iconeAstralis,
     webPreferences: {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
+      // Voz, compartilhamento e timers continuam rodando com a janela oculta.
+      backgroundThrottling: process.platform !== 'win32',
     },
   });
   win.removeMenu();
@@ -381,6 +384,46 @@ function createWindow() {
   }
 
   return win;
+}
+
+function configurarBandeja(win) {
+  const mostrarAstralis = () => {
+    if (win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  };
+  app.on('second-instance', mostrarAstralis);
+  win.once('closed', () => app.removeListener('second-instance', mostrarAstralis));
+
+  let bandeja;
+  try {
+    bandeja = new Tray(iconeAstralis);
+    bandeja.setToolTip('Astralis');
+    bandeja.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Abrir Astralis', click: mostrarAstralis },
+      { type: 'separator' },
+      { label: 'Sair do Astralis', click: () => app.quit() },
+    ]));
+    bandeja.on('click', mostrarAstralis);
+  } catch (error) {
+    bandeja?.destroy();
+    console.warn('Não foi possível criar o ícone do Astralis na bandeja:', error.message);
+    return;
+  }
+
+  let encerrando = false;
+  const permitirEncerramento = () => { encerrando = true; };
+  app.on('before-quit', permitirEncerramento);
+  win.on('close', (event) => {
+    if (encerrando) return;
+    event.preventDefault();
+    win.hide();
+  });
+  win.once('closed', () => {
+    app.removeListener('before-quit', permitirEncerramento);
+    bandeja.destroy();
+  });
 }
 
 // Consulta novas publicações automaticamente; baixar e instalar exigem os botões do app.
@@ -446,6 +489,10 @@ function configurarAtualizacaoManual(win) {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'win32' && !app.requestSingleInstanceLock()) {
+    app.quit();
+    return;
+  }
   ipcMain.handle('obter-compatibilidade-captura-janela', () => ({
     available: compatibilidadeCapturaJanelaDisponivel,
     enabled: compatibilidadeCapturaJanelaAtiva,
@@ -487,6 +534,7 @@ app.whenReady().then(() => {
   configurarCapturaPorProcesso();
   configurarCapturaExcluindoProcesso();
   const win = createWindow();
+  if (process.platform === 'win32') configurarBandeja(win);
   configurarAtualizacaoManual(win);
 });
 

@@ -27,6 +27,8 @@ O aplicativo usa contas e serviços próprios do Astralis. Os temas Claro, Escur
 4. Abra **Amigos → Adicionar amigo** e envie um pedido pelo nome exato ou código `nome#ID`. Seu próprio código aparece nessa tela.
 5. Depois do aceite em **Pendentes**, abra a conversa e use o botão de telefone para ligar. Também é possível criar ou entrar em um servidor pelo botão **+** da barra lateral.
 
+O **X** recolhe o Astralis para a bandeja do Windows. Chamadas e compartilhamentos ativos continuam em segundo plano. Clique no ícone do Astralis próximo ao relógio para voltar à janela ou use **Sair do Astralis** no menu do ícone para encerrar.
+
 O aplicativo consulta novas versões ao iniciar e enquanto permanece aberto. Quando houver uma atualização, clique em **Baixar atualização** para iniciar o download e acompanhar o progresso. Depois, clique em **Reiniciar e instalar** quando puder interromper o uso. Fechar ou reabrir o Astralis não instala a atualização automaticamente; você pode adiar sem sair da conta. Se houver uma falha, o aviso permite tentar novamente a etapa que falhou. Você também pode atualizar pelo instalador da release mais recente.
 
 ### No navegador e no celular

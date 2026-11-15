@@ -15,6 +15,7 @@ async function loadCompatibilityMain() {
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: false, setName() {}, setAppUserModelId() {},
+    requestSingleInstanceLock: () => true,
     getPath: () => '/virtual-user-data', whenReady: () => Promise.resolve(),
     commandLine: { getSwitchValue: () => 'AllowWgcScreenCapturer,FeatureOne', appendSwitch() {} },
     relaunch: (options) => calls.relaunches.push(options), exit: (code) => calls.exits.push(code),
@@ -29,6 +30,8 @@ async function loadCompatibilityMain() {
     require(id) {
       if (id === 'electron') return {
         app, BrowserWindow: Window, clipboard: {}, desktopCapturer: {},
+        Tray: class { setToolTip() {} setContextMenu() {} on() {} },
+        Menu: { buildFromTemplate: (menu) => menu },
         ipcMain: { handle: (name, handler) => handlers.set(name, handler), on() {} },
         session: { defaultSession: { setDisplayMediaRequestHandler() {}, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} } },
       };
