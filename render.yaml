@@ -4,13 +4,12 @@ services:
     name: app-gamers-server
     runtime: rust
     plan: free
-    rootDir: server-rust
     buildFilter:
       paths:
         - server-rust/**
         - render.yaml
-    buildCommand: cargo build --release --locked
-    startCommand: ./target/release/astralis-server
+    buildCommand: rustup toolchain install 1.100.0 --profile minimal && cargo +1.100.0 build --manifest-path server-rust/Cargo.toml --release --locked
+    startCommand: ./server-rust/target/release/astralis-server
     healthCheckPath: /health
     envVars:
       - key: RUSTUP_TOOLCHAIN
