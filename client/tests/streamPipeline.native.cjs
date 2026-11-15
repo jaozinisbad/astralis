@@ -11,7 +11,7 @@ app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'astralis-stream-p
 const root = path.resolve(__dirname, '../src');
 const output = process.argv[2];
 
-async function browserRun() {
+async function browserRun(backend) {
   const { createStreamRoomPeerSession } = await import('/src/streamRoomPeer.mjs');
   const { resolveVideoCodecPreferences } = await import('/src/streamCodecs.mjs');
   const { summarizeWebRtcStats } = await import('/src/streamStats.mjs');
@@ -33,6 +33,20 @@ async function browserRun() {
       const receiver = this.sockets.get(message.para);
       queueMicrotask(() => receiver?.listeners.get(event)?.forEach((listener) => listener({ ...message, de: this.id })));
     }
+  }
+  async function connect(token) {
+    const socket = window.io(backend.url, { auth: { token }, forceNew: true, reconnection: false, timeout: 5000 });
+    await new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('connect_error', reject);
+    });
+    return socket;
+  }
+
+  async function ask(socket, event, data) {
+    const result = await socket.timeout(5000).emitWithAck(event, data);
+    if (!result?.ok) throw new Error(`${event}: ${result?.error || 'sem resposta'}`);
+    return result;
   }
   const canvas = document.createElement('canvas');
   canvas.width = 1920; canvas.height = 1080;
@@ -65,8 +79,13 @@ async function browserRun() {
       const timeline = [];
       const startedAt = performance.now();
       let diagnostics;
+      const hostSocket = backend ? await connect(backend.hostToken) : new Socket('host', sockets);
+      const roomId = backend ? (await ask(hostSocket, 'salas:criar', {
+        name: 'Validação local WebRTC', visibility: 'public',
+      })).room.id : 'local-room';
+      const hostId = hostSocket.id;
       const host = createStreamRoomPeerSession({
-        socket: new Socket('host', sockets), roomId: 'local-room', role: 'host', streamId: 'host', iceServers: [],
+        socket: hostSocket, roomId, role: 'host', streamId: hostId, iceServers: [],
         resolveVideoCodecPreferencesImpl: efficient ? resolveVideoCodecPreferences : async () => [],
         onStats: (stats) => {
           diagnostics = stats;
@@ -77,19 +96,29 @@ async function browserRun() {
         onQualityError: (error) => errors.push(String(error)), onSignalError: (error) => errors.push(String(error.error)),
       });
       const sessions = [];
-      for (let index = 0; index < viewers; index += 1) {
-        const video = document.createElement('video');
-        video.autoplay = true; video.muted = true; video.width = 320;
-        document.body.append(video);
-        sessions.push(createStreamRoomPeerSession({
-          socket: new Socket(`viewer-${index}`, sockets), roomId: 'local-room', role: 'viewer', streamId: 'host', iceServers: [],
-          onRemoteStream: (_peerId, remote) => { if (remote) { video.srcObject = remote; received[index] = video; } },
-          onSignalError: (error) => errors.push(String(error.error)),
-        }));
-      }
+      const viewerSockets = [];
       try {
+        for (let index = 0; index < viewers; index += 1) {
+          const video = document.createElement('video');
+          video.autoplay = true; video.muted = true; video.width = 320;
+          document.body.append(video);
+          const viewer = backend ? await connect(backend.viewerToken) : new Socket(`viewer-${index}`, sockets);
+          viewerSockets.push(viewer);
+          if (backend) await ask(viewer, 'salas:entrar', { roomId });
+          sessions.push(createStreamRoomPeerSession({
+            socket: viewer, roomId, role: 'viewer', streamId: hostId, iceServers: [],
+            onRemoteStream: (_peerId, remote) => { if (remote) { video.srcObject = remote; received[index] = video; } },
+            onSignalError: (error) => errors.push(String(error.error)),
+          }));
+        }
+        if (backend) {
+          await ask(hostSocket, 'salas:ao-vivo', { roomId, isLive: true });
+          for (const viewer of viewerSockets) {
+            await ask(viewer, 'sala:espectador-pronto', { roomId, streamId: hostId });
+          }
+        }
         host.setLocalStream(stream);
-        await host.setViewers(Array.from({ length: viewers }, (_, index) => `viewer-${index}`));
+        await host.setViewers(viewerSockets.map((viewer) => viewer.id));
         await until(() => received.length === viewers && received.every((video) => video?.videoWidth > 0));
         await wait(12000);
         await host.refreshStats();
@@ -108,6 +137,10 @@ async function browserRun() {
         if (errors.length || frames.some((video) => video.decoded < 30)) throw new Error(`Local decode failed for ${label}`);
       } finally {
         host.close(); sessions.forEach((session) => session.close()); received.forEach((video) => { video.srcObject = null; video.remove(); });
+        if (backend) {
+          viewerSockets.forEach((viewer) => viewer.disconnect());
+          hostSocket.disconnect();
+        }
       }
     }
   } finally {
@@ -122,10 +155,37 @@ let server;
 let window;
 const watchdog = setTimeout(() => { console.error('Native pipeline validation timed out'); app.exit(1); }, 150_000);
 app.whenReady().then(async () => {
+  const backendUrl = process.env.ASTRALIS_MEDIA_TEST_SERVER;
+  let backend = null;
+  if (backendUrl) {
+    const url = new URL(backendUrl);
+    assert.equal(url.protocol, 'http:');
+    assert.equal(url.hostname, '127.0.0.1');
+    const login = async (email) => {
+      const response = await fetch(new URL('/api/login', url), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, senha: process.env.ASTRALIS_MEDIA_TEST_PASSWORD }),
+        signal: AbortSignal.timeout(5000),
+      });
+      assert.equal(response.status, 200);
+      return (await response.json()).token;
+    };
+    const [hostToken, viewerToken] = await Promise.all([
+      login(process.env.ASTRALIS_MEDIA_TEST_HOST_EMAIL), login(process.env.ASTRALIS_MEDIA_TEST_VIEWER_EMAIL),
+    ]);
+    backend = { url: url.origin, hostToken, viewerToken };
+  }
   server = http.createServer((request, response) => {
     if (request.url === '/') {
       response.setHeader('Content-Type', 'text/html');
-      response.end('<!doctype html><title>Astralis isolated stream validation</title><body></body>');
+      response.end(`<!doctype html><title>Astralis isolated stream validation</title><body>
+        ${backend ? '<script src="/socket-client.js"></script>' : ''}</body>`);
+      return;
+    }
+    if (backend && request.url === '/socket-client.js') {
+      response.setHeader('Content-Type', 'text/javascript');
+      const packageRoot = path.dirname(require.resolve('socket.io-client/package.json'));
+      response.end(fs.readFileSync(path.join(packageRoot, 'dist', 'socket.io.js')));
       return;
     }
     const filename = path.resolve(root, '.' + request.url.replace(/^\/src/, ''));
@@ -137,7 +197,8 @@ app.whenReady().then(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   window = new BrowserWindow({ show: false, width: 1000, height: 800, webPreferences: { backgroundThrottling: false, contextIsolation: true, nodeIntegration: false } });
   await window.loadURL(`http://127.0.0.1:${server.address().port}`);
-  const result = await window.webContents.executeJavaScript(`(${browserRun.toString()})()`);
+  const result = await window.webContents.executeJavaScript(`(${browserRun.toString()})(${JSON.stringify(backend)})`);
+  result.realSignaling = Boolean(backend);
   result.versions = process.versions;
   if (output) fs.writeFileSync(output, JSON.stringify(result, null, 2));
   for (const item of result.cases) {

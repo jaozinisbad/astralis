@@ -1,0 +1,25 @@
+[package]
+name = "astralis-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+bcrypt = "0.17"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+getrandom = "0.4"
+hmac = "0.12"
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+socketioxide = { version = "0.18", features = ["extensions", "state"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "chrono", "derive", "json"] }
+subtle = "2.6"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+uuid = { version = "1", features = ["v4"] }

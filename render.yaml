@@ -2,19 +2,19 @@
 services:
   - type: web
     name: app-gamers-server
-    runtime: node
+    runtime: rust
     plan: free
-    rootDir: server
+    rootDir: server-rust
     buildFilter:
       paths:
-        - server/**
+        - server-rust/**
         - render.yaml
-    buildCommand: npm ci --omit=dev
-    startCommand: npm start
-    healthCheckPath: /
+    buildCommand: cargo build --release --locked
+    startCommand: ./target/release/astralis-server
+    healthCheckPath: /health
     envVars:
-      - key: NODE_VERSION
-        value: "24"
+      - key: RUSTUP_TOOLCHAIN
+        value: "1.100.0"
       - key: NODE_ENV
         value: production
       - key: JWT_SECRET
