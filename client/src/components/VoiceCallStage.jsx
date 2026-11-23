@@ -53,7 +53,7 @@ function FocusedStreamVideo({ stream }) {
 
 export default function VoiceCallStage({ canal, participantes, socketId, micMudo, audioMudo, conectando, connectionState, compartilhamentoPendente, erro, erroCompartilhamento,
   compartilhandoTela, streamSelecionada, telaSelecionadaId, telaLocalSelecionada, participanteSelecionado,
-  telasRemotas, streamLocal, telaTileRef, emTelaCheia, telasMutadas, volumesTelas,
+  telasRemotas, streamLocal, telaTileRef, emTelaCheia, paginaInteira, telasMutadas, volumesTelas,
   onAlternarMic, onAlternarAudio, onCompartilharTela, onPararCompartilhamento, onDesconectar, onAbrirConfiguracoes,
   onSelecionarTela, onFecharTela, onMinimizarTela, onTelaCheia, onMutarTela, onVolumeTela, onAbrirConversa }) {
   const menuRef = useRef(null);
@@ -81,7 +81,7 @@ export default function VoiceCallStage({ canal, participantes, socketId, micMudo
       {erro && <p className="voice-stage__error" role="alert">{erro}</p>}
       {erroCompartilhamento && <p className="voice-stage__error" role="alert">{erroCompartilhamento}</p>}
       {streamSelecionada ? <div className="voice-stage__focused">
-        <div className="voice-stage__stream tela-tile" key={telaSelecionadaId} ref={telaTileRef}>
+        <div className={`voice-stage__stream tela-tile${paginaInteira ? ' voice-stage__stream--fullscreen-page' : ''}`} key={telaSelecionadaId} ref={telaTileRef}>
           <FocusedStreamVideo stream={streamSelecionada} />
           <div className="voice-stage__stream-label"><span className="voice-participant__name">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Transmissão ao vivo'}</span></div>
           <div className="voice-stage__stream-controls">

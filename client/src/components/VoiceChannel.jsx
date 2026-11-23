@@ -5,6 +5,7 @@ import { getCaptureConstraints, getVideoEncodingParameters, resolveStreamQuality
 import { resolveVideoCodecPreferences } from '../streamCodecs.mjs';
 import { withScreenStartBitrate } from '../streamStartup.mjs';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from '../screenCapture.mjs';
+import { alternarTelaCheia } from '../voiceFullscreen.mjs';
 import VoiceCallStage from './VoiceCallStage.jsx';
 import VoiceMiniPlayer from './VoiceMiniPlayer.jsx';
 
@@ -41,6 +42,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [telaMinimizada, setTelaMinimizada] = useState(false);
   const [posicaoMiniPlayer, setPosicaoMiniPlayer] = useState(null);
   const [emTelaCheia, setEmTelaCheia] = useState(false);
+  const [paginaInteira, setPaginaInteira] = useState(false);
   const [conectando, setConectando] = useState(true);
   const [connectionState, setConnectionState] = useState('connecting');
   const [compartilhamentoPendente, setCompartilhamentoPendente] = useState(false);
@@ -782,11 +784,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       if (!elemento) {
         throw new Error('Painel da transmissão não encontrado.');
       }
-      if (document.fullscreenElement === elemento) {
-        await document.exitFullscreen();
-      } else {
-        await elemento.requestFullscreen();
-      }
+      setPaginaInteira(await alternarTelaCheia(elemento, document, paginaInteira));
+      setErroCompartilhamento('');
     } catch (err) {
       console.error('Falha ao abrir tela cheia:', err);
       setErroCompartilhamento('Não foi possível abrir a transmissão em tela cheia.');
@@ -918,6 +917,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     return () => document.removeEventListener('fullscreenchange', sincronizarTelaCheia);
   }, []);
 
+  useEffect(() => {
+    setPaginaInteira(false);
+  }, [telaSelecionadaId, visible, telaMinimizada]);
+
   const mostrarMiniPlayer = Boolean(streamSelecionada && (!visible || telaMinimizada));
   if (!visible && !mostrarMiniPlayer) return null;
   const localId = socket?.id || 'local';
@@ -934,7 +937,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     telaSelecionadaId={mostrarMiniPlayer ? null : telaSelecionadaId} telaLocalSelecionada={telaLocalSelecionada}
     participanteSelecionado={participanteSelecionado} telasRemotas={telasRemotas}
     streamLocal={compartilhandoTela ? telaLocalRef.current : null}
-    telaTileRef={telaTileRef} emTelaCheia={emTelaCheia} telasMutadas={telasMutadas} volumesTelas={volumesTelas}
+    telaTileRef={telaTileRef} emTelaCheia={emTelaCheia || paginaInteira} paginaInteira={paginaInteira} telasMutadas={telasMutadas} volumesTelas={volumesTelas}
     onAlternarMic={alternarMudo} onAlternarAudio={alternarAudio}
     onCompartilharTela={onCompartilharTela} onPararCompartilhamento={pararCompartilhamento}
     onDesconectar={onDesconectar} onAbrirConfiguracoes={onAbrirConfiguracoes}
