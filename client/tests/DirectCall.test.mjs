@@ -29,6 +29,28 @@ function mount(socket, options = {}) {
 }
 afterEach(() => { act(() => renderer?.unmount()); renderer = null; current = null; });
 
+test('an active call with a resume token survives a brief signaling loss', async () => {
+  const socket = transport();
+  socket.timeout = () => socket;
+  socket.active = true;
+  const events = mount(socket);
+  act(() => socket.receive('chamada:estado', { call: active }));
+  assert.equal(socket.sent[0].event, 'chamada:preparar-retomada');
+  await act(async () => socket.sent[0].ack({ ok: true, resumeToken: 'first' }));
+  act(() => { socket.connected = false; socket.receive('disconnect'); });
+  assert.equal(current.call.id, active.id);
+  act(() => { socket.connected = true; socket.receive('connect'); });
+  assert.deepEqual(socket.sent[1].data, { callId: active.id, resumeToken: 'first' });
+  await act(async () => socket.sent[1].ack({ ok: true, resumeToken: 'rotated' }));
+  assert.equal(events.active.length, 1);
+  assert.deepEqual(events.ended, []);
+  act(() => { socket.connected = false; socket.receive('disconnect'); });
+  act(() => { socket.connected = true; socket.receive('connect'); });
+  assert.equal(socket.sent[2].data.resumeToken, 'rotated');
+  await act(async () => socket.sent[2].ack({ ok: false }));
+  assert.deepEqual(events.ended, [active.id]);
+});
+
 test('outgoing invitation never opens media until acceptance and duplicate clicks send once', async () => {
   const socket = transport(), events = mount(socket);
   let promise;

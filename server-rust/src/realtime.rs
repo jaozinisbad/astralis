@@ -182,9 +182,9 @@ async fn disconnected(
     Extension(user): Extension<Session>,
 ) {
     stream_rooms::disconnected(&socket, &io, Arc::clone(&state.stream_rooms));
-    let (changed_channel, last) = {
+    let (changed_channel, last, resume) = {
         let mut live = lock(&state);
-        live.calls.disconnect(&io, socket.id, user.id);
+        let resume = live.calls.disconnect(&io, socket.id, user.id);
         let changed = leave_guild_voice(&mut live, &io, &socket);
         let last = live
             .user_sockets
@@ -193,8 +193,15 @@ async fn disconnected(
         if last {
             live.user_sockets.remove(&user.id);
         }
-        (changed, last)
+        (changed, last, resume)
     };
+    if let Some(id) = resume {
+        let (state, io, sid) = (Arc::clone(&state), io.clone(), socket.id);
+        tokio::spawn(async move {
+            tokio::time::sleep(direct_calls::RESUME_WINDOW).await;
+            lock(&state).calls.expire_resume(&io, &id, sid);
+        });
+    }
     if let Some(channel) = changed_channel {
         log_error(announce_voice(&io, &state, channel).await);
     }
@@ -676,6 +683,26 @@ pub(crate) fn register(socket: &SocketRef, user: &Session, state: &AppState) {
     );
     socket.on("entrar-canal-voz", join_voice);
     socket.on("sair-canal-voz", leave_voice);
+    socket.on(
+        "voz:ice-config",
+        async |socket: SocketRef,
+               State(state): State<Arc<AppState>>,
+               Extension(user): Extension<Session>,
+               ack: AckSender| {
+            let joined = {
+                let live = lock(&state);
+                live.voice_by_socket.contains_key(&socket.id)
+                    || live.calls.is_joined(socket.id, user.id)
+            };
+            if socket.connected() && joined && session_current(&state, &user) {
+                let mut config = state.ice.for_socket(&socket.id.to_string());
+                config["ok"] = json!(true);
+                let _ = ack.send(&config);
+            } else {
+                let _ = ack.send(&json!({ "ok": false }));
+            }
+        },
+    );
     socket.on("obter-presenca-servidor", voice_snapshot);
     socket.on("expulsar-da-call", kick_voice);
     socket.on(

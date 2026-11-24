@@ -4,13 +4,13 @@ import { sincronizarReproducaoDasTelas } from '../audioTela.mjs';
 import { getCaptureConstraints, getVideoEncodingParameters, resolveStreamQuality } from '../streamQuality.mjs';
 import { resolveVideoCodecPreferences } from '../streamCodecs.mjs';
 import { withScreenStartBitrate } from '../streamStartup.mjs';
+import { DEFAULT_ROOM_ICE_SERVERS, loadVoiceIceConfiguration } from '../roomIceConfiguration.mjs';
+import { createVoicePeerConnection } from '../voicePeerConnection.mjs';
+import { alternarTelaCheia } from '../voiceFullscreen.mjs';
 import { getScreenCaptureWarning, requestScreenCapture, stopScreenCapture } from '../screenCapture.mjs';
 import VoiceCallStage from './VoiceCallStage.jsx';
 import VoiceMiniPlayer from './VoiceMiniPlayer.jsx';
 
-// Servidores STUN públicos e gratuitos do Google — ajudam os dois lados
-// a descobrirem como se alcançar através da internet (NAT traversal).
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 // O perfil de captura e o teto de bitrate vêm do seletor compartilhado
 // com as salas; cada conexão P2P recebe o limite calculado para esse perfil.
@@ -18,6 +18,7 @@ const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 // — com um microfone bom, vale a pena usar mais banda pra manter a
 // clareza da voz.
 const BITRATE_AUDIO = 128_000;
+const OPCOES_ENTRADA = ['microfoneId', 'perfilEntrada', 'supressaoRuido', 'cancelamentoEco', 'ganhoAutomatico'];
 
 // O áudio do sistema (jogo, música, etc.) se beneficia de mais banda
 // ainda que a voz, já que costuma ter mais variação de frequência.
@@ -34,6 +35,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [micMudo, setMicMudo] = useState(false);
   const [audioMudo, setAudioMudo] = useState(false);
   const [erro, setErro] = useState('');
+  const [avisoMicrofone, setAvisoMicrofone] = useState('');
   const [erroCompartilhamento, setErroCompartilhamento] = useState('');
   const [telasMutadas, setTelasMutadas] = useState(() => new Set());
   const [volumesTelas, setVolumesTelas] = useState({});
@@ -41,6 +43,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const [telaMinimizada, setTelaMinimizada] = useState(false);
   const [posicaoMiniPlayer, setPosicaoMiniPlayer] = useState(null);
   const [emTelaCheia, setEmTelaCheia] = useState(false);
+  const [paginaInteira, setPaginaInteira] = useState(false);
   const [conectando, setConectando] = useState(true);
   const [connectionState, setConnectionState] = useState('connecting');
   const [compartilhamentoPendente, setCompartilhamentoPendente] = useState(false);
@@ -57,7 +60,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const streamEnviadaRef = useRef(null); // depois do GainNode — essa é a enviada
   const contextoEntradaRef = useRef(null);
   const ganhoEntradaRef = useRef(null);
+  const origemEntradaRef = useRef(null);
   const filtroRuidoRef = useRef(null);
+  const pedidoEntradaRef = useRef(0);
+  const entradaAplicadaRef = useRef(null);
 
   const telaLocalRef = useRef(null);
   const pedidoCapturaTelaRef = useRef(0);
@@ -76,6 +82,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   const faixaComBitrateInicial = useRef(new WeakMap());
   const avisouFalhaQualidadeRef = useRef(false);
   const conexoesRef = useRef({}); // socketId -> RTCPeerConnection
+  const negociacoesRef = useRef(new Map());
   const audiosRef = useRef({}); // socketId -> HTMLAudioElement (microfone)
   const audiosTelaRef = useRef({}); // socketId -> HTMLAudioElement (áudio do sistema de quem compartilha tela)
   const audioMudoRef = useRef(false);
@@ -137,12 +144,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       streams,
       telaSelecionadaId,
       erro,
+      avisoMicrofone,
       erroCompartilhamento,
       conectando,
       connectionState,
       compartilhamentoPendente,
     });
-  }, [participantes, micMudo, audioMudo, compartilhandoTela, telasRemotas, telaSelecionadaId, socket, erro, erroCompartilhamento, conectando, connectionState, compartilhamentoPendente]);
+  }, [participantes, micMudo, audioMudo, compartilhandoTela, telasRemotas, telaSelecionadaId, socket, erro, avisoMicrofone, erroCompartilhamento, conectando, connectionState, compartilhamentoPendente]);
 
   // Inicializa a configuração de áudio do localStorage
   useEffect(() => {
@@ -191,16 +199,29 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
   }
 
-  // Monta o pipeline microfone -> ganho -> stream de saída. Usado tanto
-  // ao entrar na call quanto ao trocar de microfone no meio dela.
-  //
-  // CORREÇÃO: agora pedimos explicitamente cancelamento de eco, supressão
-  // de ruído e controle automático de ganho (antes ficava só no padrão
-  // "cru" do sistema, o que deixava ruído externo vazar mais), e também
-  // respeitamos o microfone escolhido nas Configurações — antes o app
-  // sempre usava o microfone padrão do Windows, ignorando a escolha.
-  async function montarPipelineDeEntrada(deviceId) {
-    const config = configuracaoAudioRef.current;
+  async function criarFiltroRuido(contexto) {
+    const { Rnnoise } = await import('@shiguredo/rnnoise-wasm');
+    const rnnoise = await Rnnoise.load();
+    const processador = contexto.createScriptProcessor(1024, 1, 1);
+    const estado = rnnoise.createDenoiseState();
+    const entrada = [];
+    const saida = [];
+    processador.onaudioprocess = (evento) => {
+      const canalEntrada = evento.inputBuffer.getChannelData(0);
+      const canalSaida = evento.outputBuffer.getChannelData(0);
+      for (let i = 0; i < canalEntrada.length; i += 1) entrada.push(canalEntrada[i]);
+      while (entrada.length >= rnnoise.frameSize) {
+        const quadro = Float32Array.from(entrada.splice(0, rnnoise.frameSize));
+        estado.processFrame(quadro);
+        for (let i = 0; i < quadro.length; i += 1) saida.push(quadro[i]);
+      }
+      for (let i = 0; i < canalSaida.length; i += 1) canalSaida[i] = saida.length ? saida.shift() : 0;
+    };
+    return { no: processador, destruir() { processador.disconnect(); estado.destroy(); } };
+  }
+
+  async function montarPipelineDeEntrada(config, pedido) {
+    const deviceId = config.microfoneId;
     const isolamento = config.perfilEntrada !== 'estudio';
     const usarRnnoise = isolamento && config.supressaoRuido === 'rnnoise';
     const constraints = {
@@ -217,7 +238,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     try {
       streamBruta = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
-      if (err.name !== 'OverconstrainedError' || !deviceId) throw err;
+      if (err.name !== 'OverconstrainedError' || !deviceId || streamLocalRef.current || pedido !== pedidoEntradaRef.current) throw err;
 
       // O dispositivo salvo pode ter sido removido ou renomeado no Windows.
       // Nesse caso, deixa o sistema escolher o microfone padrão.
@@ -232,52 +253,63 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       });
     }
 
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    const contexto = new AudioContext();
-    const origem = contexto.createMediaStreamSource(streamBruta);
-    const ganho = contexto.createGain();
-    ganho.gain.value = (configuracaoAudioRef.current.volumeEntrada ?? 100) / 100;
-    const destino = contexto.createMediaStreamDestination();
-    let filtro = null;
-    if (usarRnnoise) {
-      try {
-        const { Rnnoise } = await import('@shiguredo/rnnoise-wasm');
-        const rnnoise = await Rnnoise.load();
-        const estado = rnnoise.createDenoiseState();
-        const processador = contexto.createScriptProcessor(1024, 1, 1);
-        const entrada = [];
-        const saida = [];
-        processador.onaudioprocess = (evento) => {
-          const canalEntrada = evento.inputBuffer.getChannelData(0);
-          const canalSaida = evento.outputBuffer.getChannelData(0);
-          for (let i = 0; i < canalEntrada.length; i += 1) entrada.push(canalEntrada[i]);
-          while (entrada.length >= rnnoise.frameSize) {
-            const quadro = Float32Array.from(entrada.splice(0, rnnoise.frameSize));
-            estado.processFrame(quadro);
-            for (let i = 0; i < quadro.length; i += 1) saida.push(quadro[i]);
-          }
-          for (let i = 0; i < canalSaida.length; i += 1) canalSaida[i] = saida.length ? saida.shift() : 0;
-        };
-        origem.connect(processador).connect(ganho);
-        filtro = { destruir: () => { processador.disconnect(); estado.destroy(); } };
-      } catch (err) {
-        // A supressão nativa continua ativa se o WebAssembly não puder carregar.
-        origem.connect(ganho);
+    const contextoAtivo = contextoEntradaRef.current;
+    let contexto = contextoAtivo;
+    let origem, filtro, destino;
+    let aplicada = false;
+    try {
+      if (pedido !== pedidoEntradaRef.current) return;
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      contexto ??= new AudioContext();
+      origem = contexto.createMediaStreamSource(streamBruta);
+      if (usarRnnoise) filtro = await criarFiltroRuido(contexto).catch(() => null);
+      if (pedido !== pedidoEntradaRef.current) return;
+
+      // Os participantes continuam recebendo a mesma faixa de saída durante a troca.
+      const ganho = ganhoEntradaRef.current || contexto.createGain();
+      if (!contextoAtivo) {
+        ganho.gain.value = (configuracaoAudioRef.current.volumeEntrada ?? 100) / 100;
+        destino = contexto.createMediaStreamDestination();
+        ganho.connect(destino);
       }
-    } else {
-      origem.connect(ganho);
+      const habilitada = streamLocalRef.current?.getAudioTracks()[0]?.enabled ?? !micMudo;
+      streamBruta.getAudioTracks().forEach(track => { track.enabled = habilitada; });
+      if (filtro) filtro.no.connect(ganho);
+      origem.connect(filtro?.no || ganho);
+
+      origemEntradaRef.current?.disconnect?.();
+      filtroRuidoRef.current?.destruir();
+      streamLocalRef.current?.getTracks().forEach(track => track.stop());
+      streamLocalRef.current = streamBruta;
+      origemEntradaRef.current = origem;
+      filtroRuidoRef.current = filtro;
+      contextoEntradaRef.current = contexto;
+      ganhoEntradaRef.current = ganho;
+      if (destino) streamEnviadaRef.current = destino.stream;
+      entradaAplicadaRef.current = config;
+      aplicada = true;
+    } finally {
+      if (!aplicada) {
+        streamBruta.getTracks().forEach(track => track.stop());
+        origem?.disconnect?.();
+        filtro?.destruir();
+        destino?.stream.getTracks().forEach(track => track.stop());
+        if (!contextoAtivo) contexto?.close().catch(() => {});
+      }
     }
-    ganho.connect(destino);
+  }
 
-    streamLocalRef.current = streamBruta;
-    streamEnviadaRef.current = destino.stream;
-    contextoEntradaRef.current = contexto;
-    ganhoEntradaRef.current = ganho;
-    filtroRuidoRef.current = filtro;
-
-    streamBruta.getAudioTracks().forEach((t) => (t.enabled = !micMudo));
-
-    return destino.stream.getAudioTracks()[0];
+  function liberarEntrada() {
+    pedidoEntradaRef.current += 1;
+    streamLocalRef.current?.getTracks().forEach(track => track.stop());
+    streamEnviadaRef.current?.getTracks().forEach(track => track.stop());
+    origemEntradaRef.current?.disconnect?.();
+    filtroRuidoRef.current?.destruir();
+    contextoEntradaRef.current?.close().catch(() => {});
+    streamLocalRef.current = streamEnviadaRef.current = null;
+    origemEntradaRef.current = filtroRuidoRef.current = null;
+    ganhoEntradaRef.current = contextoEntradaRef.current = null;
+    entradaAplicadaRef.current = null;
   }
 
   function aplicarVolumeESaidaNosAudios() {
@@ -308,7 +340,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     remetente.setParameters(parametros).catch(() => {});
   }
 
-  async function renegociar(pc, socketId) {
+  async function configurarCodecTela(pc) {
     const track = telaLocalRef.current?.getVideoTracks()[0];
     const transceiver = track && pc.getTransceivers?.().find((item) => item.sender.track === track);
     if (typeof transceiver?.setCodecPreferences === 'function') {
@@ -317,24 +349,38 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         cache.set(track, resolveVideoCodecPreferences({ quality: qualidadeTelaAtualRef.current, track }).catch(() => []));
       }
       const preferencias = await cache.get(track);
-      if (conexoesRef.current[socketId] !== pc || transceiver.sender.track !== track) return;
+      if (transceiver.sender.track !== track) return;
       if (preferencias.length) {
         try { transceiver.setCodecPreferences(preferencias); } catch {}
       }
     }
-    const oferta = await pc.createOffer();
-    if (conexoesRef.current[socketId] !== pc) return;
-    await pc.setLocalDescription(oferta);
-    socket.emit('webrtc-oferta', { para: socketId, oferta });
   }
 
   useEffect(() => {
     if (!socket) return;
     let cancelado = false;
+    let entrou = false;
+    let peerQueReconecta = null;
+    let retomandoChamadaDireta = false;
+    const statusDosPeers = new Map();
+    const candidatosIniciais = new Map();
+
+    function atualizarConexao() {
+      if (!entrou || cancelado) return;
+      const estados = [...statusDosPeers.values()];
+      if (estados.includes('connected')) retomandoChamadaDireta = false;
+      if (estados.includes('reconnecting')) setConnectionState('reconnecting');
+      else if (estados.includes('failed')) setConnectionState('failed');
+      else if (retomandoChamadaDireta) setConnectionState('reconnecting');
+      else if (estados.includes('connecting')) setConnectionState('connecting');
+      else setConnectionState('connected');
+    }
 
     function criarConexao(socketId) {
-      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      const pc = new RTCPeerConnection({ iceServers: DEFAULT_ROOM_ICE_SERVERS });
       conexoesRef.current[socketId] = pc;
+      statusDosPeers.set(socketId, 'connecting');
+      atualizarConexao();
 
       streamEnviadaRef.current?.getTracks().forEach((track) => {
         pc.addTrack(track, streamEnviadaRef.current);
@@ -364,6 +410,36 @@ const VoiceChannel = forwardRef(function VoiceChannel(
         }
       };
 
+      let servidoresIce = DEFAULT_ROOM_ICE_SERVERS;
+      let iceConfigurado = false;
+      const negociacao = createVoicePeerConnection({
+        peer: pc,
+        polite: socket.id > socketId,
+        prepare: async ({ offer, restart }) => {
+          if (!iceConfigurado || restart) {
+            const servidores = await loadVoiceIceConfiguration(socket);
+            if (conexoesRef.current[socketId] !== pc) return;
+            if (servidores !== servidoresIce && typeof pc.setConfiguration === 'function') {
+              try {
+                pc.setConfiguration({ ...pc.getConfiguration(), iceServers: servidores });
+                servidoresIce = servidores;
+              } catch {}
+            }
+            iceConfigurado = true;
+          }
+          if (offer) await configurarCodecTela(pc);
+        },
+        emit: (evento, campo, descricao) => socket.emit(evento, { para: socketId, [campo]: descricao }),
+        onStatus: (estado) => {
+          statusDosPeers.set(socketId, estado);
+          atualizarConexao();
+        },
+      });
+      negociacoesRef.current.set(socketId, negociacao);
+      for (const candidato of candidatosIniciais.get(socketId) || []) void negociacao.receiveCandidate(candidato);
+      candidatosIniciais.delete(socketId);
+
+      let videoRemotoAtual;
       pc.ontrack = (e) => {
         if (e.track.kind === 'audio') {
           // Se essa faixa de áudio veio junto de um vídeo no mesmo
@@ -427,9 +503,12 @@ const VoiceChannel = forwardRef(function VoiceChannel(
             telasComSomRef.current.add(socketId);
             tocarEfeito('transmissaoRecebida');
           }
-          setTelasRemotas((atual) => ({ ...atual, [socketId]: e.streams[0] }));
+          const streamRecebida = e.streams[0];
+          videoRemotoAtual = e.track;
+          setTelasRemotas((atual) => ({ ...atual, [socketId]: streamRecebida }));
           e.track.onended = () => {
             setTelasRemotas((atual) => {
+              if (videoRemotoAtual !== e.track || atual[socketId] !== streamRecebida) return atual;
               const copia = { ...atual };
               delete copia[socketId];
               return copia;
@@ -442,8 +521,13 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
 
     function fecharConexao(socketId) {
+      negociacoesRef.current.get(socketId)?.close();
+      negociacoesRef.current.delete(socketId);
+      candidatosIniciais.delete(socketId);
+      statusDosPeers.delete(socketId);
       conexoesRef.current[socketId]?.close();
       delete conexoesRef.current[socketId];
+      atualizarConexao();
       if (audiosRef.current[socketId]) {
         audiosRef.current[socketId].srcObject = null;
         delete audiosRef.current[socketId];
@@ -482,18 +566,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       setConnectionState('connecting');
       setErro('');
       try {
-        await montarPipelineDeEntrada(configuracaoAudioRef.current.microfoneId);
-        if (cancelado) {
-          streamLocalRef.current?.getTracks().forEach((track) => track.stop());
-          streamEnviadaRef.current?.getTracks().forEach((track) => track.stop());
-          streamLocalRef.current = null;
-          streamEnviadaRef.current = null;
-          filtroRuidoRef.current?.destruir();
-          filtroRuidoRef.current = null;
-          await contextoEntradaRef.current?.close().catch(() => {});
-          contextoEntradaRef.current = null;
-          return;
-        }
+        setAvisoMicrofone('');
+        const pedido = ++pedidoEntradaRef.current;
+        await montarPipelineDeEntrada(configuracaoAudioRef.current, pedido);
+        if (cancelado || pedido !== pedidoEntradaRef.current) return;
         socket.emit('entrar-canal-voz', canal.id);
       } catch (err) {
         if (cancelado) return;
@@ -511,76 +587,73 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
 
     socket.on('peers-existentes', ({ peers }) => {
+      entrou = true;
       setConectando(false);
-      setConnectionState('connected');
       setParticipantes([
         ...peers,
         { socketId: socket.id, nome: nomeUsuario },
       ]);
       peers.forEach((p) => {
-        const pc = criarConexao(p.socketId);
-        renegociar(pc, p.socketId);
+        if (conexoesRef.current[p.socketId]) return;
+        criarConexao(p.socketId);
+        void negociacoesRef.current.get(p.socketId)?.offer();
       });
+      atualizarConexao();
     });
 
     socket.on('novo-peer', ({ socketId, nome, avatarCor, avatarUrl }) => {
-      tocarEfeito('entrar');
+      if (peerQueReconecta) {
+        statusDosPeers.delete(peerQueReconecta);
+        peerQueReconecta = null;
+        statusDosPeers.set(socketId, 'connecting');
+        atualizarConexao();
+      }
+      if (!retomandoChamadaDireta) tocarEfeito('entrar');
       setParticipantes((atual) => [...atual.filter((item) => item.socketId !== socketId), { socketId, nome, avatarCor: avatarCor || '#9270f4', avatarUrl: avatarUrl || null }]);
     });
 
-    socket.on('webrtc-oferta', async ({ de, oferta }) => {
+    socket.on('webrtc-oferta', ({ de, oferta }) => {
+      if (cancelado || !entrou) return;
       const conexaoNova = !conexoesRef.current[de];
-      const pc = conexoesRef.current[de] || criarConexao(de);
-      await pc.setRemoteDescription(oferta);
-      const resposta = await pc.createAnswer();
-      await pc.setLocalDescription(resposta);
-      socket.emit('webrtc-resposta', { para: de, resposta });
-
-      // Se é uma conexão nova (alguém acabou de entrar na call) e eu já
-      // estou compartilhando tela: a track de vídeo foi adicionada na
-      // criarConexao(), mas não pôde entrar nessa resposta, porque a
-      // resposta só "fala" sobre o que a oferta recebida pediu (só
-      // áudio, no caso de quem chega). Por isso mandamos uma segunda
-      // oferta logo em seguida, dessa vez incluindo o vídeo — sem isso,
-      // quem entra depois só veria a tela se a pessoa reiniciasse o
-      // compartilhamento.
-      if (conexaoNova && telaLocalRef.current) {
-        await renegociar(pc, de);
-      }
+      if (conexaoNova) criarConexao(de);
+      // A resposta só inclui as mídias pedidas pela oferta.
+      return negociacoesRef.current.get(de)?.receiveOffer(oferta, conexaoNova && Boolean(telaLocalRef.current));
     });
 
-    socket.on('webrtc-resposta', async ({ de, resposta }) => {
+    socket.on('webrtc-resposta', ({ de, resposta }) => {
       const pc = conexoesRef.current[de];
       if (!pc) return;
-      const track = telaLocalRef.current?.getVideoTracks()[0];
-      const transceiver = track && pc.getTransceivers?.().find((item) => item.sender.track === track);
-      if (transceiver && faixaComBitrateInicial.current.get(pc) !== track) {
+      return negociacoesRef.current.get(de)?.receiveAnswer(resposta, (descricao) => {
+        const track = telaLocalRef.current?.getVideoTracks()[0];
+        const transceiver = track && pc.getTransceivers?.().find((item) => item.sender.track === track);
+        if (!transceiver || faixaComBitrateInicial.current.get(pc) === track) return descricao;
         const maxBitrate = getVideoEncodingParameters(qualidadeTelaAtualRef.current, Object.keys(conexoesRef.current).length).maxBitrate;
-        const ajustada = withScreenStartBitrate(resposta, transceiver.mid, maxBitrate);
-        if (ajustada !== resposta) {
-          await pc.setRemoteDescription(ajustada);
-          faixaComBitrateInicial.current.set(pc, track);
-          return;
-        }
-      }
-      await pc.setRemoteDescription(resposta);
+        const ajustada = withScreenStartBitrate(descricao, transceiver.mid, maxBitrate);
+        if (ajustada !== descricao) faixaComBitrateInicial.current.set(pc, track);
+        return ajustada;
+      });
     });
 
-    socket.on('webrtc-candidato', async ({ de, candidato }) => {
-      const pc = conexoesRef.current[de];
-      if (pc) {
-        try {
-          await pc.addIceCandidate(candidato);
-        } catch (e) {
-          // candidato pode chegar antes da remote description em alguns casos; ignora
-        }
-      }
+    socket.on('webrtc-candidato', ({ de, candidato }) => {
+      if (cancelado || !entrou || !candidato) return;
+      const negociacao = negociacoesRef.current.get(de);
+      if (negociacao) return negociacao.receiveCandidate(candidato);
+      if (!candidatosIniciais.has(de) && candidatosIniciais.size >= 32) return;
+      const fila = candidatosIniciais.get(de) || [];
+      if (fila.length < 128) fila.push(candidato);
+      candidatosIniciais.set(de, fila);
     });
 
-    socket.on('peer-saiu', ({ socketId }) => {
-      tocarEfeito('sair');
+    socket.on('peer-saiu', ({ socketId, reconnecting }) => {
+      if (reconnecting && canal.direta) retomandoChamadaDireta = true;
+      else tocarEfeito('sair');
       telasComSomRef.current.delete(socketId);
       fecharConexao(socketId);
+      if (reconnecting && canal.direta) {
+        peerQueReconecta = socketId;
+        statusDosPeers.set(socketId, 'reconnecting');
+        atualizarConexao();
+      }
       setParticipantes((atual) => atual.filter((p) => p.socketId !== socketId));
     });
 
@@ -589,24 +662,29 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     });
 
     function desconectado() {
+      entrou = false;
+      retomandoChamadaDireta = Boolean(canal.direta && socket.active);
       setConectando(false);
-      setConnectionState('disconnected');
+      setConnectionState(socket.active ? 'reconnecting' : 'disconnected');
     }
     function entradaRecusada({ error } = {}) {
       if (cancelado) return;
       setConectando(false);
       setConnectionState('failed');
       setErro(error || 'Não foi possível entrar na chamada.');
-      streamLocalRef.current?.getTracks().forEach(track => track.stop());
-      streamEnviadaRef.current?.getTracks().forEach(track => track.stop());
+      liberarEntrada();
     }
     function reconectado() {
       if (!streamEnviadaRef.current || cancelado) return;
+      entrou = false;
       Object.keys(conexoesRef.current).forEach(fecharConexao);
+      statusDosPeers.clear();
+      peerQueReconecta = null;
+      candidatosIniciais.clear();
       setParticipantes([]);
       setConectando(true);
-      setConnectionState('connecting');
-      socket.emit('entrar-canal-voz', canal.id);
+      setConnectionState(retomandoChamadaDireta ? 'reconnecting' : 'connecting');
+      if (!canal.direta) socket.emit('entrar-canal-voz', canal.id);
     }
     socket.on('disconnect', desconectado);
     socket.on('voz:erro', entradaRecusada);
@@ -630,13 +708,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       socket.off('connect', reconectado);
 
       Object.keys(conexoesRef.current).forEach(fecharConexao);
-      streamLocalRef.current?.getTracks().forEach((t) => t.stop());
-      streamLocalRef.current = null;
-      streamEnviadaRef.current = null;
-      filtroRuidoRef.current?.destruir();
-      filtroRuidoRef.current = null;
-      contextoEntradaRef.current?.close().catch(() => {});
-      contextoEntradaRef.current = null;
+      liberarEntrada();
       stopScreenCapture(telaLocalRef.current).catch(() => {});
       telaLocalRef.current = null;
       setParticipantes([]);
@@ -668,7 +740,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
   }
 
   async function renegociarComTodos() {
-    await Promise.all(Object.entries(conexoesRef.current).map(([socketId, pc]) => renegociar(pc, socketId)));
+    await Promise.all([...negociacoesRef.current.values()].map((negociacao) => negociacao.offer()));
   }
 
   // CORREÇÃO DO BUG "sempre compartilha o monitor 1": antes de chamar
@@ -782,11 +854,8 @@ const VoiceChannel = forwardRef(function VoiceChannel(
       if (!elemento) {
         throw new Error('Painel da transmissão não encontrado.');
       }
-      if (document.fullscreenElement === elemento) {
-        await document.exitFullscreen();
-      } else {
-        await elemento.requestFullscreen();
-      }
+      setPaginaInteira(await alternarTelaCheia(elemento, document, paginaInteira));
+      setErroCompartilhamento('');
     } catch (err) {
       console.error('Falha ao abrir tela cheia:', err);
       setErroCompartilhamento('Não foi possível abrir a transmissão em tela cheia.');
@@ -803,7 +872,7 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     if (!config) return;
 
     const configuracaoAnterior = configuracaoAudioRef.current;
-    const precisaReconstruirEntrada = ['microfoneId', 'perfilEntrada', 'supressaoRuido', 'cancelamentoEco', 'ganhoAutomatico']
+    const precisaReconstruirEntrada = OPCOES_ENTRADA
       .some((chave) => config[chave] !== undefined && config[chave] !== configuracaoAnterior[chave]);
     configuracaoAudioRef.current = { ...configuracaoAudioRef.current, ...config };
 
@@ -817,20 +886,17 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     }
 
     if (precisaReconstruirEntrada && streamLocalRef.current) {
+      const pedido = ++pedidoEntradaRef.current;
+      const desejada = configuracaoAudioRef.current;
+      const aplicada = entradaAplicadaRef.current;
+      setAvisoMicrofone('');
+      if (OPCOES_ENTRADA.every(chave => desejada[chave] === aplicada[chave])) return;
       try {
-        streamLocalRef.current.getTracks().forEach((t) => t.stop());
-        filtroRuidoRef.current?.destruir();
-        filtroRuidoRef.current = null;
-        contextoEntradaRef.current?.close().catch(() => {});
-        const novaTrackEnviada = await montarPipelineDeEntrada(config.microfoneId);
-
-        Object.values(conexoesRef.current).forEach((pc) => {
-          const remetente = pc.getSenders().find((s) => s.track?.kind === 'audio');
-          remetente?.replaceTrack(novaTrackEnviada);
-          configurarQualidadeDeAudio(pc);
-        });
-      } catch (err) {
-        setErro('Não foi possível trocar de microfone.');
+        await montarPipelineDeEntrada(desejada, pedido);
+      } catch {
+        if (pedido !== pedidoEntradaRef.current) return;
+        for (const chave of OPCOES_ENTRADA) configuracaoAudioRef.current[chave] = aplicada[chave];
+        setAvisoMicrofone('Não foi possível trocar de microfone. O microfone anterior continua selecionado.');
       }
     }
   }
@@ -918,6 +984,10 @@ const VoiceChannel = forwardRef(function VoiceChannel(
     return () => document.removeEventListener('fullscreenchange', sincronizarTelaCheia);
   }, []);
 
+  useEffect(() => {
+    setPaginaInteira(false);
+  }, [telaSelecionadaId, visible, telaMinimizada]);
+
   const mostrarMiniPlayer = Boolean(streamSelecionada && (!visible || telaMinimizada));
   if (!visible && !mostrarMiniPlayer) return null;
   const localId = socket?.id || 'local';
@@ -928,13 +998,14 @@ const VoiceChannel = forwardRef(function VoiceChannel(
 
   const stage = visible && <VoiceCallStage
     canal={canal} participantes={participantesDoPalco} socketId={localId}
+    peersRef={conexoesRef}
     micMudo={micMudo} audioMudo={audioMudo} conectando={conectando} connectionState={connectionState}
-    erro={erro} erroCompartilhamento={erroCompartilhamento} compartilhamentoPendente={compartilhamentoPendente}
+    erro={erro} avisoMicrofone={avisoMicrofone} erroCompartilhamento={erroCompartilhamento} compartilhamentoPendente={compartilhamentoPendente}
     compartilhandoTela={compartilhandoTela} streamSelecionada={mostrarMiniPlayer ? null : streamSelecionada}
     telaSelecionadaId={mostrarMiniPlayer ? null : telaSelecionadaId} telaLocalSelecionada={telaLocalSelecionada}
     participanteSelecionado={participanteSelecionado} telasRemotas={telasRemotas}
     streamLocal={compartilhandoTela ? telaLocalRef.current : null}
-    telaTileRef={telaTileRef} emTelaCheia={emTelaCheia} telasMutadas={telasMutadas} volumesTelas={volumesTelas}
+    telaTileRef={telaTileRef} emTelaCheia={emTelaCheia || paginaInteira} paginaInteira={paginaInteira} telasMutadas={telasMutadas} volumesTelas={volumesTelas}
     onAlternarMic={alternarMudo} onAlternarAudio={alternarAudio}
     onCompartilharTela={onCompartilharTela} onPararCompartilhamento={pararCompartilhamento}
     onDesconectar={onDesconectar} onAbrirConfiguracoes={onAbrirConfiguracoes}

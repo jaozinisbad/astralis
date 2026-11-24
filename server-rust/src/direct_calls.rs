@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -21,6 +21,12 @@ use crate::{
 };
 
 pub(crate) const DIRECT_PREFIX: &str = "direta:";
+pub(crate) const RESUME_WINDOW: Duration = Duration::from_secs(30);
+
+struct ResumeSlot {
+    token: String,
+    deadline: Option<Instant>,
+}
 
 #[derive(Clone, Serialize, sqlx::FromRow)]
 pub(crate) struct Profile {
@@ -63,6 +69,7 @@ struct Call {
     callee_socket: Option<Sid>,
     ringing: HashSet<Sid>,
     joined: HashMap<Sid, Participant>,
+    resume: HashMap<Sid, ResumeSlot>,
     timeout: Option<AbortHandle>,
 }
 
@@ -138,14 +145,29 @@ impl Calls {
         }
     }
 
-    pub(crate) fn disconnect(&mut self, io: &SocketIo, sid: Sid, user: i64) {
+    pub(crate) fn disconnect(&mut self, io: &SocketIo, sid: Sid, user: i64) -> Option<String> {
         let Some(call) = self
             .by_user
             .get(&user)
             .and_then(|id| self.calls.get_mut(id))
         else {
-            return;
+            return None;
         };
+        if call.selected(sid)
+            && let Some(slot) = call.resume.get_mut(&sid)
+        {
+            slot.deadline = Some(Instant::now() + RESUME_WINDOW);
+            call.joined.remove(&sid);
+            for peer in call.joined.keys() {
+                emit(
+                    io,
+                    *peer,
+                    "peer-saiu",
+                    &json!({ "socketId": sid.to_string(), "reconnecting": true }),
+                );
+            }
+            return Some(call.id.clone());
+        }
         let ended = sid == call.caller_socket
             || call.callee_socket == Some(sid)
             || (user == call.callee.id && call.callee_socket.is_none() && {
@@ -156,6 +178,82 @@ impl Calls {
             let id = call.id.clone();
             self.finish(io, &id, "disconnected");
         }
+        None
+    }
+
+    pub(crate) fn expire_resume(&mut self, io: &SocketIo, id: &str, sid: Sid) {
+        if self
+            .calls
+            .get(id)
+            .and_then(|call| call.resume.get(&sid))
+            .and_then(|slot| slot.deadline)
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            self.finish(io, id, "disconnected");
+        }
+    }
+
+    fn prepare_resume(&mut self, socket: &SocketRef, id: &str) -> Value {
+        let Some(call) = self
+            .calls
+            .get_mut(id)
+            .filter(|call| socket.connected() && call.selected(socket.id))
+        else {
+            return failure("forbidden", "Esta chamada não pertence a esta sessão.");
+        };
+        let slot = call.resume.entry(socket.id).or_insert_with(|| ResumeSlot {
+            token: uuid::Uuid::new_v4().to_string(),
+            deadline: None,
+        });
+        json!({ "ok": true, "resumeToken": slot.token })
+    }
+
+    fn resume(
+        &mut self,
+        io: &SocketIo,
+        socket: &SocketRef,
+        user: i64,
+        id: &str,
+        token: &str,
+    ) -> Value {
+        let Some(call) = self
+            .calls
+            .get_mut(id)
+            .filter(|call| socket.connected() && call.callee_socket.is_some())
+        else {
+            return failure("not-found", "Esta chamada já terminou.");
+        };
+        let old_sid = if user == call.caller.id {
+            Some(call.caller_socket)
+        } else if user == call.callee.id {
+            call.callee_socket
+        } else {
+            None
+        };
+        let Some(old_sid) = old_sid.filter(|sid| {
+            call.resume.get(sid).is_some_and(|slot| {
+                slot.token == token
+                    && slot
+                        .deadline
+                        .is_some_and(|deadline| Instant::now() < deadline)
+            })
+        }) else {
+            return failure(
+                "forbidden",
+                "Esta chamada não pode ser retomada nesta sessão.",
+            );
+        };
+        call.resume.remove(&old_sid);
+        if old_sid == call.caller_socket {
+            call.caller_socket = socket.id;
+        } else {
+            call.callee_socket = Some(socket.id);
+            call.ringing.remove(&old_sid);
+            call.ringing.insert(socket.id);
+        }
+        let result = self.prepare_resume(socket, id);
+        self.join_voice(io, socket, &format!("{DIRECT_PREFIX}{id}"));
+        result
     }
 
     pub(crate) fn join_voice(&mut self, io: &SocketIo, socket: &SocketRef, channel: &str) -> Value {
@@ -202,6 +300,13 @@ impl Calls {
             return true;
         }
         false
+    }
+
+    pub(crate) fn is_joined(&self, sid: Sid, user: i64) -> bool {
+        self.by_user
+            .get(&user)
+            .and_then(|id| self.calls.get(id))
+            .is_some_and(|call| call.selected(sid) && call.joined.contains_key(&sid))
     }
 
     pub(crate) fn peers(&self, sid: Sid, user: i64) -> Vec<Sid> {
@@ -323,6 +428,7 @@ async fn start(
         callee_socket: None,
         ringing: recipients,
         joined: HashMap::new(),
+        resume: HashMap::new(),
         timeout: Some(timer),
     };
     let summary = call.summary();
@@ -443,6 +549,8 @@ pub(crate) fn register(socket: &SocketRef) {
         ("chamada:recusar", "declined"),
         ("chamada:cancelar", "cancelled"),
         ("chamada:encerrar", "ended"),
+        ("chamada:preparar-retomada", "prepare-resume"),
+        ("chamada:retomar", "resume"),
     ] {
         socket.on(
             event,
@@ -462,6 +570,22 @@ pub(crate) fn register(socket: &SocketRef) {
                 let result = match action {
                     "start" => start(&io, &state, &socket, &user, &input).await,
                     "accept" => accept(&io, &state, &socket, &user, id).await,
+                    "prepare-resume" if crate::realtime::session_current(&state, &user) => {
+                        Ok(lock(&state).calls.prepare_resume(&socket, id))
+                    }
+                    "resume" if crate::realtime::session_current(&state, &user) => {
+                        let token = input
+                            .get("resumeToken")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let mut live = lock(&state);
+                        if externally_busy(&state, &io, &live, user.id) {
+                            Ok(failure("busy", "Encerre sua chamada atual."))
+                        } else {
+                            Ok(live.calls.resume(&io, &socket, user.id, id, token))
+                        }
+                    }
+                    "prepare-resume" | "resume" => Ok(failure("forbidden", "Esta sessão expirou.")),
                     _ => Ok(end(&io, &state, &socket, &user, id, action)),
                 };
                 let result = result.unwrap_or_else(|error| {

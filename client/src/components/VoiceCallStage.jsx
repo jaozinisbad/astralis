@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
 import { getVoicePanelStatus } from './VoiceConnectionPanel.jsx';
+import VoiceCallDiagnostics from './VoiceCallDiagnostics.jsx';
 import VoiceStreamPreview from './VoiceStreamPreview.jsx';
 import VoiceStreamVideo from './VoiceStreamVideo.jsx';
 import './VoiceCallStage.css';
@@ -51,9 +52,9 @@ function FocusedStreamVideo({ stream }) {
   </>;
 }
 
-export default function VoiceCallStage({ canal, participantes, socketId, micMudo, audioMudo, conectando, connectionState, compartilhamentoPendente, erro, erroCompartilhamento,
+export default function VoiceCallStage({ canal, participantes, socketId, peersRef, micMudo, audioMudo, conectando, connectionState, compartilhamentoPendente, erro, avisoMicrofone, erroCompartilhamento,
   compartilhandoTela, streamSelecionada, telaSelecionadaId, telaLocalSelecionada, participanteSelecionado,
-  telasRemotas, streamLocal, telaTileRef, emTelaCheia, telasMutadas, volumesTelas,
+  telasRemotas, streamLocal, telaTileRef, emTelaCheia, paginaInteira, telasMutadas, volumesTelas,
   onAlternarMic, onAlternarAudio, onCompartilharTela, onPararCompartilhamento, onDesconectar, onAbrirConfiguracoes,
   onSelecionarTela, onFecharTela, onMinimizarTela, onTelaCheia, onMutarTela, onVolumeTela, onAbrirConversa }) {
   const menuRef = useRef(null);
@@ -78,10 +79,13 @@ export default function VoiceCallStage({ canal, participantes, socketId, micMudo
     <header className="voice-stage__header"><CallIcon name="voice" size={22} /><h1>{canal.nome}</h1><span className="voice-stage__header-divider" /><span className="voice-stage__people">{participantes.length} {participantes.length === 1 ? 'participante' : 'participantes'}</span>{onAbrirConversa && <button type="button" className="voice-stage__back" onClick={onAbrirConversa}>Ver conversa</button>}{streamSelecionada && <button type="button" className="voice-stage__back" onClick={onFecharTela}>Voltar aos participantes</button>}</header>
     <div className="voice-stage__body">
       <div className={`voice-stage__connection${connection.id === 'failed' ? ' voice-stage__connection--error' : connection.id === 'connecting' ? ' voice-stage__connection--pending' : ''}`} role={erro ? 'alert' : 'status'}><span />{status}{erro && onAbrirConfiguracoes && <button type="button" onClick={onAbrirConfiguracoes}>Configurações de voz</button>}</div>
+      {peersRef && <VoiceCallDiagnostics peersRef={peersRef} stream={streamSelecionada || streamLocal}
+        selectedId={telaSelecionadaId} local={telaLocalSelecionada || !streamSelecionada} />}
       {erro && <p className="voice-stage__error" role="alert">{erro}</p>}
+      {avisoMicrofone && <p className="voice-stage__error" role="alert">{avisoMicrofone}</p>}
       {erroCompartilhamento && <p className="voice-stage__error" role="alert">{erroCompartilhamento}</p>}
       {streamSelecionada ? <div className="voice-stage__focused">
-        <div className="voice-stage__stream tela-tile" key={telaSelecionadaId} ref={telaTileRef}>
+        <div className={`voice-stage__stream tela-tile${paginaInteira ? ' voice-stage__stream--fullscreen-page' : ''}`} key={telaSelecionadaId} ref={telaTileRef}>
           <FocusedStreamVideo stream={streamSelecionada} />
           <div className="voice-stage__stream-label"><span className="voice-participant__name">{telaLocalSelecionada ? 'Sua tela (você)' : participanteSelecionado?.nome || 'Transmissão ao vivo'}</span></div>
           <div className="voice-stage__stream-controls">

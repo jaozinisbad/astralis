@@ -375,6 +375,12 @@ io.on('connection', (socket) => {
     });
   }));
 
+  socket.on('voz:ice-config', (_dados, callback) => {
+    if (typeof callback !== 'function') return;
+    if (!socket.canalVozAtual) return callback({ ok: false });
+    callback({ ok: true, ...createRoomIceConfiguration({ socketId: socket.id }) });
+  });
+
   // Sinalização do fluxo legado de voz: só retransmite se os sockets ainda
   // estiverem juntos no mesmo canal. Salas de tela usam sala:sinal:* com
   // papéis verificados pelo gerenciador.

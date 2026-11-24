@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto');
 
 const DIRECT_CHANNEL_PREFIX = 'direta:';
+const RESUME_WINDOW_MS = 30_000;
 const isDirectChannel = (channelId) => typeof channelId === 'string' && channelId.startsWith(DIRECT_CHANNEL_PREFIX);
 const failure = (code, error) => ({ ok: false, code, error });
 
@@ -69,6 +70,7 @@ function createDirectCallManager({
     callsByUser.delete(call.caller.id);
     callsByUser.delete(call.callee.id);
     clearTimeoutImpl(call.timer);
+    for (const slot of call.resume.values()) clearTimeoutImpl(slot.timer);
 
     const notified = new Set([call.callerSocketId, ...call.ringingSocketIds]);
     if (call.calleeSocketId) notified.add(call.calleeSocketId);
@@ -111,6 +113,7 @@ function createDirectCallManager({
       calleeSocketId: null,
       ringingSocketIds: new Set(recipients.map((item) => item.id)),
       joined: new Map(),
+      resume: new Map(),
     };
     calls.set(call.id, call);
     callsByUser.set(userId, call.id);
@@ -225,11 +228,47 @@ function createDirectCallManager({
     const call = calls.get(callsByUser.get(Number(socket.usuario?.id)));
     if (!call) return;
     if (socket.id === call.callerSocketId || socket.id === call.calleeSocketId) {
+      const slot = call.status === 'active' && call.resume.get(socket.id);
+      if (slot) {
+        call.joined.delete(socket.id);
+        for (const peer of call.joined.keys()) emit(peer, 'peer-saiu', { socketId: socket.id, reconnecting: true });
+        slot.deadline = Date.now() + RESUME_WINDOW_MS;
+        slot.timer = setTimeoutImpl(() => finish(call, 'disconnected'), RESUME_WINDOW_MS);
+        slot.timer?.unref?.();
+        return;
+      }
       finish(call, 'disconnected');
     } else if (call.status === 'ringing' && call.callee.id === Number(socket.usuario?.id)) {
       call.ringingSocketIds.delete(socket.id);
       if (!userSockets(call.callee.id).some((item) => call.ringingSocketIds.has(item.id))) finish(call, 'disconnected');
     }
+  }
+
+  function prepareResume(socket, data) {
+    const call = calls.get(data?.callId);
+    if (!call || !activeSocket(call, socket)) return failure('forbidden', 'Esta chamada não pertence a esta sessão.');
+    if (!call.resume.has(socket.id)) call.resume.set(socket.id, { token: randomUUID(), deadline: null });
+    return { ok: true, resumeToken: call.resume.get(socket.id).token };
+  }
+
+  function resume(socket, data) {
+    const call = calls.get(data?.callId);
+    if (!call || call.status !== 'active') return failure('not-found', 'Esta chamada já terminou.');
+    const user = Number(socket.usuario?.id);
+    const role = user === call.caller.id ? 'callerSocketId' : user === call.callee.id ? 'calleeSocketId' : null;
+    const old = role && call[role];
+    const slot = call.resume.get(old);
+    if (!connected(socket) || isExternallyBusy(user) || !slot?.deadline
+      || Date.now() >= slot.deadline || slot.token !== data?.resumeToken) {
+      return failure('forbidden', 'Esta chamada não pode ser retomada nesta sessão.');
+    }
+    clearTimeoutImpl(slot.timer);
+    call.resume.delete(old);
+    call[role] = socket.id;
+    if (call.ringingSocketIds.delete(old)) call.ringingSocketIds.add(socket.id);
+    const result = prepareResume(socket, data);
+    joinVoice(socket, `${DIRECT_CHANNEL_PREFIX}${call.id}`);
+    return result;
   }
 
   async function revalidateUsers(userIds) {
@@ -255,6 +294,8 @@ function createDirectCallManager({
     socket.on('chamada:recusar', handler((owner, data) => end(owner, data, 'declined')));
     socket.on('chamada:cancelar', handler((owner, data) => end(owner, data, 'cancelled')));
     socket.on('chamada:encerrar', handler((owner, data) => end(owner, data, 'ended')));
+    socket.on('chamada:preparar-retomada', handler(prepareResume));
+    socket.on('chamada:retomar', handler(resume));
     // Uma nova aba pode receber um convite ainda pendente, mas nunca herda áudio.
     const call = calls.get(callsByUser.get(Number(socket.usuario?.id)));
     if (call?.status === 'ringing' && call.callee.id === Number(socket.usuario.id)) {

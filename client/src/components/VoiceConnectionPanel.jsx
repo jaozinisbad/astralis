@@ -31,7 +31,7 @@ export default function VoiceConnectionPanel({ channel, state = {}, actions = {}
   const canStart = status.id === 'connected' && state.podeCompartilharTela !== false
     && typeof actions.onIniciarTela === 'function' && !pending;
   const changeSource = actions.onTrocarFonte || actions.onIniciarTela;
-  const errors = [...new Set([state.erro, state.erroCompartilhamento].filter(Boolean))];
+  const errors = [...new Set([state.erro, state.avisoMicrofone, state.erroCompartilhamento].filter(Boolean))];
 
   return <section className={`as-voice-panel as-voice-panel--${status.id}${active ? ' is-sharing' : ''}`} aria-label="Conexão de voz e transmissão">
     <div className="as-voice-panel__connection">

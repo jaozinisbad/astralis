@@ -104,7 +104,7 @@ for (const leaveBeforePermission of [false, true]) test(leaveBeforePermission
     await act(async () => { grant(stream); await new Promise(resolve => setImmediate(resolve)); });
     if (leaveBeforePermission) {
       assert.equal(track.stopped, true);
-      assert.equal(contexts[0].closed, true);
+      assert.equal(contexts.length, 0);
       assert.equal(emitted.some(([name]) => name === 'entrar-canal-voz'), false);
     } else {
       assert.deepEqual(emitted.find(([name]) => name === 'entrar-canal-voz'), ['entrar-canal-voz', 'voice']);

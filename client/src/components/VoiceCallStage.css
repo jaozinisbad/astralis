@@ -17,6 +17,12 @@
 .voice-stage__connection--pending { color: var(--as-muted, #aaa4b8); }
 .voice-stage__connection--error { color: var(--as-danger, #ed646c); }
 .voice-stage__connection button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; font-size: 12px; }
+.voice-stage__diagnostics { flex: none; align-self: center; max-width: 100%; margin-bottom: 8px; color: var(--as-muted, #aaa4b8); font-size: 12px; }
+.voice-stage__diagnostics summary { width: fit-content; margin-inline: auto; padding: 4px 8px; cursor: pointer; }
+.voice-stage__diagnostics-body { padding: 8px 12px; border: 1px solid var(--as-border, #ffffff24); border-radius: 6px; }
+.voice-stage__diagnostics-body dl { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; }
+.voice-stage__diagnostics-body dd { margin: 2px 0 0; color: var(--as-text, #f2eff8); }
+.voice-stage__diagnostics-body p { margin: 8px 0 0; }
 .voice-stage__error { margin: 0 0 12px; color: var(--as-danger, #ed646c); text-align: center; line-height: 1.5; font-size: 13px; }
 .voice-stage__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; width: 100%; max-width: 1200px; margin: auto; align-content: center; padding: 16px 0; }
 .voice-stage__grid--alone { max-width: 700px; grid-template-columns: minmax(0, 1fr); }
@@ -55,6 +61,7 @@
 .voice-stage__footer-hint { color: var(--as-muted, #aaa4b8); text-align: center; font-size: 10px; margin: 12px 0 0; line-height: 1.5; }
 .voice-stage__focused { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .voice-stage .voice-stage__stream { flex: 1 1 0; width: 100%; min-width: 0; min-height: 180px; max-height: 100%; border-radius: 8px; background: #08070c; }
+.voice-stage .voice-stage__stream--fullscreen-page { position: fixed; inset: 0; z-index: 1000; width: 100vw; height: 100dvh; min-height: 0; max-height: none; border-radius: 0; background: #000; }
 .voice-stage__stream-label { position: absolute; bottom: 12px; left: 12px; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; background: #0009; max-width: calc(100% - 24px); }
 .voice-stage__stream-label .voice-participant__name { color: #fff; font-size: 12px; }
 .voice-stage__stream-controls { position: absolute; top: 10px; right: 10px; left: 10px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }

@@ -109,6 +109,73 @@ async function setControls(participant, muted, deafened) {
   if (participant.state().audioMudo !== deafened) await act(async () => participant.ref.current.alternarAudio());
 }
 
+test('ending the previous capture after a source switch keeps the viewer watching the new screen', async () => {
+  await withCall(true, async ({ participants: [, viewer] }) => {
+    const first = stream(track('video', 'first-window'));
+    const next = stream(track('video', 'next-window'));
+    const receive = capture => viewer.peer.ontrack({ track: capture.getVideoTracks()[0], streams: [capture] });
+    await act(async () => receive(first));
+    await act(async () => viewer.ref.current.alternarTransmissao('a'));
+    await act(async () => receive(next));
+    await act(async () => first.getVideoTracks()[0].onended());
+    assert.equal(viewer.state().streams.a, next);
+    assert.equal(viewer.state().telaSelecionadaId, 'a');
+    assert.equal(viewer.assignments.at(-1), next);
+    await act(async () => next.getVideoTracks()[0].onended());
+    assert.equal(viewer.state().telaSelecionadaId, null);
+  });
+});
+
+test('microphone failure retains live input and retry honors mute toggled during permission', async () => {
+  await withCall(true, async ({ participants: [a] }) => {
+    const media = navigator.mediaDevices;
+    const current = a.mic.getAudioTracks()[0];
+    const sender = a.peer.getSenders()[0];
+    const sent = sender.track;
+    const requests = [];
+    media.getUserMedia = async constraints => {
+      requests.push(constraints);
+      throw new DOMException('Unavailable', 'OverconstrainedError');
+    };
+    const config = { microfoneId: 'headset' };
+    await act(async () => a.ref.current.aplicarConfiguracao(config));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].audio.deviceId.exact, 'headset');
+    assert.equal(current.enabled, true);
+    assert.ok(!current.stopped);
+    assert.equal(a.state().erro, '');
+    assert.match(a.state().avisoMicrofone, /anterior/);
+
+    let grant;
+    media.getUserMedia = () => new Promise(resolve => { grant = resolve; });
+    const retry = a.ref.current.aplicarConfiguracao(config);
+    await act(async () => a.ref.current.alternarMudo());
+    const next = track('audio', 'headset');
+    await act(async () => { grant(stream(next)); await retry; });
+    assert.equal(current.stopped, true);
+    assert.equal(next.enabled, false);
+    assert.equal(sender.track, sent);
+    assert.equal(a.state().avisoMicrofone, '');
+  });
+});
+
+test('an older microphone request cannot replace a newer selection', async () => {
+  await withCall(false, async ({ participants: [a] }) => {
+    const pending = new Map();
+    navigator.mediaDevices.getUserMedia = ({ audio }) => new Promise(resolve => pending.set(audio.deviceId.exact, resolve));
+    const first = a.ref.current.aplicarConfiguracao({ microfoneId: 'first' });
+    const second = a.ref.current.aplicarConfiguracao({ microfoneId: 'second' });
+    const selected = track('audio', 'second');
+    const stale = track('audio', 'first');
+    await act(async () => { pending.get('second')(stream(selected)); await second; });
+    await act(async () => { pending.get('first')(stream(stale)); await first; });
+    assert.equal(stale.stopped, true);
+    assert.ok(!selected.stopped);
+    await act(async () => a.ref.current.alternarMudo());
+    assert.equal(selected.enabled, false);
+  });
+});
+
 for (const direct of [false, true]) test(`${direct ? 'private call' : 'voice channel'}: all 16 local/remote mute and deafen combinations keep stream audio independent`, async () => {
   await withCall(direct, async ({ participants: [a, b], audios, peers, microphones }) => {
     // Begin sharing while both sides have already muted/deafened voice.
@@ -149,12 +216,12 @@ for (const direct of [false, true]) test(`${direct ? 'private call' : 'voice cha
     await act(async () => a.listeners.get('webrtc-oferta')({ de: 'late-peer', oferta: { type: 'offer', sdp: 'late' } }));
     for (const mediaTrack of captured.getTracks()) assert.ok(peers.at(-1).getSenders().some((sender) => sender.track === mediaTrack && sender.track.enabled));
 
-    // Rebuilding a muted microphone must replace only its sender, preserving screen senders.
+    // The new microphone feeds the existing sender while the screen keeps playing.
     const previousMicrophone = microphoneSent.track;
     await act(async () => a.ref.current.aplicarConfiguracao({ microfoneId: 'replacement-mic' }));
     assert.equal(microphones.at(-1).getAudioTracks()[0].enabled, false);
     assert.equal(a.mic.getAudioTracks()[0].stopped, true);
-    assert.notEqual(microphoneSent.track, previousMicrophone);
+    assert.equal(microphoneSent.track, previousMicrophone);
     assert.equal(a.state().micMudo, true);
     assert.equal(a.state().audioMudo, true);
     for (const mediaTrack of captured.getTracks()) assert.ok(a.peer.getSenders().some((sender) => sender.track === mediaTrack && sender.track.enabled));

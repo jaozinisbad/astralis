@@ -80,7 +80,8 @@ async function browserRun() {
     return destination.stream;
   };
   const micQueue = [makeTone(330), makeTone(550)];
-  Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async () => {
+  Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async ({ audio }) => {
+    if (audio.deviceId?.exact === 'missing') throw new DOMException('Unavailable', 'NotFoundError');
     const stream = micQueue.shift(); check(stream, 'Unexpected microphone request'); return stream;
   } });
   localStorage.setItem('configuracoesAudio', JSON.stringify({ perfilEntrada: 'estudio', supressaoRuido: 'desligada', volumeSaida: 100 }));
@@ -119,7 +120,7 @@ async function browserRun() {
     roots.push(root); mounts[id] = entry;
     root.render(React.createElement(VoiceChannel, { ref, socket, canal: { id: 'direta:native-test', nome: 'Teste privado local', direta: true }, nomeUsuario: id, visible: true,
       onEstadoChange: state => { entry.state = state; }, onCompartilharTela() {} }));
-    await until(() => entry.state?.connectionState === 'connected' && ref.current, `${id} connected`);
+    await until(() => entry.state?.participantes.some(peer => peer.socketId === id) && ref.current, `${id} joined signaling`);
     return entry;
   };
   const trackRms = record => {
@@ -164,6 +165,7 @@ async function browserRun() {
     await until(() => b.state.audioMudo, 'viewer deafened before first remote tracks');
     pauseSignaling = false; deferred.splice(0).forEach(deliver => queueMicrotask(deliver));
     await until(() => audioRecords.filter(record => record.owner === 'viewer' && record.element.srcObject).length === 2 && b.state.telasAtivas.includes('sender'), 'distinct remote voice/screen tracks');
+    await until(() => a.state.connectionState === 'connected' && b.state.connectionState === 'connected', 'media connected after signaling');
     const viewerAudios = audioRecords.filter(record => record.owner === 'viewer' && record.element.srcObject);
     const streamAudio = viewerAudios.find(record => record.element.srcObject.getVideoTracks().length);
     const voiceAudio = viewerAudios.find(record => record !== streamAudio);
@@ -192,6 +194,22 @@ async function browserRun() {
     a.ref.current.alternarMudo();
     await until(() => !a.state.micMudo, 'sender microphone unmuted');
     await until(() => trackRms(voiceAudio) > 0.005, 'native voice audio resumed');
+    const receivedTone = () => {
+      const analyser = voiceAudio.rawAnalyser;
+      const spectrum = new Float32Array(analyser.frequencyBinCount);
+      analyser.getFloatFrequencyData(spectrum);
+      return spectrum.indexOf(Math.max(...spectrum)) * analyser.context.sampleRate / analyser.fftSize;
+    };
+    const nearTone = frequency => Math.abs(receivedTone() - frequency) < 20;
+    await until(() => nearTone(330), 'original microphone tone');
+    await a.ref.current.aplicarConfiguracao({ microfoneId: 'missing' });
+    await until(() => a.state.avisoMicrofone && nearTone(330), 'previous microphone retained after failure');
+    check(a.state.connectionState === 'connected', 'A failed device switch must keep the call connected');
+    micQueue.push(makeTone(770));
+    await a.ref.current.aplicarConfiguracao({ microfoneId: 'new-mic' });
+    await until(() => !a.state.avisoMicrofone && nearTone(770), 'replacement microphone tone received');
+    check(await peak(streamAudio.rawAnalyser) > 0.005, 'Changing microphone must preserve shared screen audio');
+    result.replacementMicrophoneHz = receivedTone();
     const screenBeforeDeafen = await peak(streamAudio.rawAnalyser);
     b.ref.current.alternarAudio();
     await until(() => b.state.audioMudo, 'voice deafen enabled'); await wait(250);

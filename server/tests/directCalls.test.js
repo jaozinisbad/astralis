@@ -51,6 +51,31 @@ async function active(f) {
   return result.call;
 }
 
+test('retomada privada exige credencial da sessão anterior e a troca ao reconectar', async () => {
+  const f = fixture();
+  const call = await active(f);
+  const data = { callId: call.id };
+  const extraTab = f.socket('other-tab', 1);
+  assert.equal((await extraTab.send('chamada:preparar-retomada', data)).ok, false);
+  const { resumeToken } = await f.caller.send('chamada:preparar-retomada', data);
+  assert.equal(typeof resumeToken, 'string');
+  assert.equal((await extraTab.send('chamada:retomar', { ...data, resumeToken })).ok, false);
+  f.manager.joinVoice(f.caller, call.canalId);
+  f.manager.joinVoice(f.callee, call.canalId);
+  f.caller.connected = false;
+  f.manager.disconnect(f.caller);
+  assert.equal(f.manager.canSignal(f.callee, f.caller.id), false);
+  assert.equal(f.manager.isUserBusy(1), true);
+  assert.equal((await f.outsider.send('chamada:retomar', { ...data, resumeToken })).ok, false);
+  assert.equal((await extraTab.send('chamada:retomar', { ...data, resumeToken: 'wrong' })).ok, false);
+  const result = await extraTab.send('chamada:retomar', { ...data, resumeToken });
+  assert.equal(result.ok, true);
+  assert.notEqual(result.resumeToken, resumeToken);
+  assert.equal(f.manager.canSignal(f.callee, extraTab.id), true);
+  assert.equal((await f.socket('replay', 1).send('chamada:retomar', { ...data, resumeToken })).ok, false);
+  assert.equal(f.timers.size, 0);
+});
+
 test('cancelar ou recusar cruzando o aceite também encerra a chamada ativa, sem liberar outra aba', async () => {
   for (const [side, event] of [['caller', 'chamada:cancelar'], ['callee', 'chamada:recusar']]) {
     const f = fixture();

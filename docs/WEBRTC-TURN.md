@@ -1,6 +1,6 @@
 # Conexões WebRTC em redes restritivas
 
-O vídeo continua sendo enviado entre participantes. Quando a rede bloqueia a conexão direta, um servidor TURN pode retransmitir o tráfego. O backend do Astralis fornece essa configuração aos membros que já entraram na sala, antes da negociação WebRTC.
+Nas salas de transmissão, chamadas privadas e canais de voz, a mídia usa uma conexão WebRTC entre participantes. Quando a rede bloqueia a conexão direta, um servidor TURN pode retransmitir o tráfego. O backend fornece a configuração aos participantes que já entraram na sala ou chamada, antes da negociação WebRTC.
 
 ## Configuração opcional no backend
 
@@ -19,6 +19,6 @@ Sem essas duas variáveis válidas, o app utiliza STUN e conexão direta. O proj
 
 ## Verificação após configurar
 
-Teste com participantes em provedores ou redes diferentes, incluindo uma rede restritiva, e confirme candidatos do tipo `relay` nos diagnósticos ICE. Um teste de vídeo na mesma máquina ou na mesma rede comprova a negociação e a entrega local; a conectividade entre redes precisa dessa verificação separada.
+Teste com participantes em provedores ou redes diferentes, incluindo uma rede restritiva. Nas chamadas, abra **Diagnóstico da chamada** e procure **Servidor de retransmissão (TURN)**. Nas salas, procure candidatos do tipo `relay` nos diagnósticos ICE. Confira também se a mídia volta quando a conexão WebRTC é interrompida por alguns segundos.
 
 Referências: [TURN no WebRTC](https://webrtc.org/getting-started/turn-server) e [autenticação temporária do coturn](https://github.com/coturn/coturn/wiki/turnserver).

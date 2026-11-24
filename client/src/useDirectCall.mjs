@@ -37,6 +37,8 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
   const mounted = useRef(false);
   const ringtone = useRef(null);
   const accepting = useRef(null);
+  const resumeToken = useRef(null);
+  const resumeTimeout = useRef(null);
 
   function syncRingtone(next) {
     if (next?.status === 'ringing' && accepting.current !== next.id) {
@@ -51,12 +53,22 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
     const becameActive = next.status === 'active' && current.current?.status !== 'active';
     syncRingtone(next);
     current.current = next; setCall(next); setError('');
-    if (becameActive) callbacks.current.onActive?.(next);
+    if (becameActive) {
+      callbacks.current.onActive?.(next);
+      if (typeof socket.timeout === 'function') {
+        void requestDirectCall(socket, 'chamada:preparar-retomada', { callId: next.id }, 3_000).then((result) => {
+          if (current.current?.id === next.id) resumeToken.current = result.resumeToken || null;
+        }).catch(() => {});
+      }
+    }
   }
   function finish(callId, reason) {
     closed.current.add(callId);
     if (closed.current.size > 100) closed.current.delete(closed.current.values().next().value);
     if (current.current?.id !== callId) return;
+    clearTimeout(resumeTimeout.current);
+    resumeTimeout.current = null;
+    resumeToken.current = null;
     ringtone.current?.stop(); accepting.current = null;
     current.current = null; setCall(null);
     operation.current++; busy.current = false; setPending(false);
@@ -72,14 +84,43 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
     if (!socket || !usuarioId) return () => { mounted.current = false; operation.current++; ringtone.current?.dispose(); ringtone.current = null; };
     const state = ({ call: next } = {}) => receive(next);
     const ended = ({ callId, reason } = {}) => finish(callId, reason);
-    const disconnect = () => { if (current.current) finish(current.current.id, 'disconnected'); operation.current++; busy.current = false; setPending(false); };
+    const disconnect = () => {
+      const active = current.current;
+      if (active?.status === 'active' && resumeToken.current && socket.active) {
+        if (resumeTimeout.current === null) {
+          resumeTimeout.current = setTimeout(() => finish(active.id, 'disconnected'), 30_000);
+        }
+      } else if (active) finish(active.id, 'disconnected');
+      operation.current++;
+      busy.current = false;
+      setPending(false);
+    };
+    const reconnect = async () => {
+      const active = current.current;
+      if (!active || !resumeToken.current || resumeTimeout.current === null) return;
+      const sequence = operation.current;
+      try {
+        const result = await requestDirectCall(socket, 'chamada:retomar', {
+          callId: active.id, resumeToken: resumeToken.current,
+        }, 5_000);
+        if (current.current?.id !== active.id || sequence !== operation.current) return;
+        resumeToken.current = result.resumeToken || null;
+        clearTimeout(resumeTimeout.current);
+        resumeTimeout.current = null;
+      } catch {
+        if (socket.connected && sequence === operation.current) finish(active.id, 'disconnected');
+      }
+    };
     socket.on('chamada:recebida', state); socket.on('chamada:estado', state);
-    socket.on('chamada:encerrada', ended); socket.on('disconnect', disconnect);
+    socket.on('chamada:encerrada', ended); socket.on('disconnect', disconnect); socket.on('connect', reconnect);
     return () => {
       mounted.current = false; operation.current++; busy.current = false;
       ringtone.current?.dispose(); ringtone.current = null; accepting.current = null;
       socket.off('chamada:recebida', state); socket.off('chamada:estado', state);
-      socket.off('chamada:encerrada', ended); socket.off('disconnect', disconnect);
+      socket.off('chamada:encerrada', ended); socket.off('disconnect', disconnect); socket.off('connect', reconnect);
+      clearTimeout(resumeTimeout.current);
+      resumeTimeout.current = null;
+      resumeToken.current = null;
       if (current.current) callbacks.current.onEnded?.(current.current.id);
       current.current = null;
     };
@@ -105,7 +146,7 @@ export function useDirectCall({ socket, usuarioId, onActive, onEnded }) {
     if (!active) return;
     const event = active.status === 'active' ? 'chamada:encerrar'
       : String(active.caller.id) === String(usuarioId) ? 'chamada:cancelar' : 'chamada:recusar';
-    // Stop capture immediately; the server also ends on disconnect.
+    // Stop capture immediately even if the server cannot acknowledge the hangup.
     finish(active.id, 'ended');
     void requestDirectCall(socket, event, { callId: active.id }).catch(cause => {
       if (mounted.current && !current.current && cause.code !== 'not-found') setError(cause.message);

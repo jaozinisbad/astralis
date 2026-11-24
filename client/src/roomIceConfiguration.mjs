@@ -1,11 +1,20 @@
 export const DEFAULT_ROOM_ICE_SERVERS = Object.freeze([{ urls: 'stun:stun.l.google.com:19302' }]);
 
 const configurationBySocket = new WeakMap();
+const voiceConfigurationBySocket = new WeakMap();
 
 export function loadRoomIceConfiguration(socket, roomId) {
+  return loadIceConfiguration(configurationBySocket, socket, 'sala:ice-config', { roomId });
+}
+
+export function loadVoiceIceConfiguration(socket) {
+  return loadIceConfiguration(voiceConfigurationBySocket, socket, 'voz:ice-config', {});
+}
+
+function loadIceConfiguration(cache, socket, event, payload) {
   // Older socket adapters and test transports can continue using direct ICE.
   if (typeof socket.timeout !== 'function') return Promise.resolve(DEFAULT_ROOM_ICE_SERVERS);
-  const cached = configurationBySocket.get(socket);
+  const cached = cache.get(socket);
   if (cached && cached.socketId === socket.id && cached.expiresAt > Date.now()) return cached.promise;
 
   const entry = { socketId: socket.id, expiresAt: Infinity, promise: null };
@@ -15,7 +24,7 @@ export function loadRoomIceConfiguration(socket, roomId) {
       resolve(DEFAULT_ROOM_ICE_SERVERS);
     };
     try {
-      socket.timeout(3000).emit('sala:ice-config', { roomId }, (error, result) => {
+      socket.timeout(3000).emit(event, payload, (error, result) => {
         if (error || result?.ok !== true || !Array.isArray(result.iceServers) || !result.iceServers.length) {
           fallback();
           return;
@@ -29,6 +38,6 @@ export function loadRoomIceConfiguration(socket, roomId) {
       fallback();
     }
   });
-  configurationBySocket.set(socket, entry);
+  cache.set(socket, entry);
   return entry.promise;
 }
